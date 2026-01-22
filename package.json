@@ -1,0 +1,26 @@
+{
+  "name": "gov-budget-report",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "dev": "node src/index.js",
+    "start": "node src/index.js",
+    "db:migrate": "node-pg-migrate up -m db/migrations",
+    "db:rollback": "node-pg-migrate down -m db/migrations --count 1",
+    "db:status": "node-pg-migrate status -m db/migrations",
+    "test": "jest --runInBand"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.12.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "node-pg-migrate": "^7.3.1",
+    "supertest": "^6.3.4"
+  }
+}
