@@ -58,6 +58,18 @@ const BUDGET_MAPPING = [
     sheet: '预算汇总',
     rowAnchor: '项目支出-资本性',
     colAnchor: '预算数（万元）'
+  },
+  {
+    key: 'fiscal_grant_revenue_total',
+    sheet: '财政拨款收支总表',
+    rowAnchor: '拨款收入合计',
+    colAnchor: '预算数（万元）'
+  },
+  {
+    key: 'fiscal_grant_expenditure_total',
+    sheet: '财政拨款收支总表',
+    rowAnchor: '拨款支出合计',
+    colAnchor: '预算数（万元）'
   }
 ];
 
