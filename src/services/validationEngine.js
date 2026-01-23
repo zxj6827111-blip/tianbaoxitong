@@ -1,5 +1,6 @@
 const db = require('../db');
 const { AppError } = require('../errors');
+const { getLineItems, resolveReasonThreshold } = require('./lineItemsService');
 
 const DEFAULT_TOLERANCE = 0.01;
 
@@ -61,6 +62,13 @@ const buildMissingKeyEvidence = (missingKeys) => ({
 const buildLineItemEvidence = (count, threshold) => ({
   anchor: 'line_items_reason',
   count,
+  threshold
+});
+
+const buildMissingReasonEvidence = (draftId, itemKey, threshold) => ({
+  anchor: `line_items_reason:${itemKey}`,
+  draft_id: draftId,
+  item_key: itemKey,
   threshold
 });
 
@@ -264,6 +272,26 @@ const rules = [
       }
       return [];
     }
+  },
+  {
+    rule_id: 'REASON_REQUIRED_MISSING',
+    level: 'FATAL',
+    title: '财政拨款支出主要内容原因必填',
+    description: '必填条目未填写原因',
+    tolerance: DEFAULT_TOLERANCE,
+    run: (ctx, config) => {
+      const missingItems = (ctx.lineItems || []).filter((item) => (
+        item.reason_required && (!item.reason_text || item.reason_text.trim() === '')
+      ));
+
+      return missingItems.map((item) => createIssue({
+        level: config.level,
+        rule_id: 'REASON_REQUIRED_MISSING',
+        message: `条目“${item.item_label}”缺少必填原因`,
+        tolerance: config.tolerance,
+        evidence: buildMissingReasonEvidence(ctx.draft.id, item.item_key, ctx.reasonThreshold)
+      }));
+    }
   }
 ];
 
@@ -375,14 +403,25 @@ const runValidation = async (draftId) => {
 
   const lineItemCount = Number(lineItemsResult.rows[0].count || 0);
 
+  const configMap = await loadRuleConfigs(rules.map((rule) => rule.rule_id));
+  const reasonThreshold = resolveReasonThreshold(
+    configMap.get('REASON_REQUIRED_MISSING')?.params_json?.threshold
+  );
+  const lineItems = await getLineItems({
+    draftId,
+    uploadId: draft.upload_id,
+    threshold: reasonThreshold
+  });
+
   const ctx = {
     draft,
     factsByKey,
     manualInputsByKey,
-    lineItemCount
+    lineItemCount,
+    lineItems,
+    reasonThreshold
   };
 
-  const configMap = await loadRuleConfigs(rules.map((rule) => rule.rule_id));
   const issues = evaluateRules(ctx, configMap);
 
   const client = await db.getClient();
