@@ -64,7 +64,28 @@ npm test
 - `GET /api/auth/me`：需要登录
 - `GET /api/admin/_demo/departments`：需 `admin`/`maintainer`
 - `GET /api/admin/_demo/units`：需 `admin`/`maintainer`
+- `GET /api/admin/departments?year=`：管理端部门树与聚合统计
+- `GET /api/admin/units?department_id=&q=&filter=&page=&pageSize=&year=`：管理端单位列表
+- `GET /api/admin/units/:unitId?year=`：管理端单位详情
+- `GET /api/admin/units/:unitId/badges?year=`：管理端单位徽标聚合
 - `POST /api/reports/:draftId/generate`：当前恒定返回 400（Fatal 禁止生成骨架）
+
+## 管理端 UI（PR-05）
+
+- `/admin`：管理端部门树 + 单位列表 + 详情三栏布局
+- `/demo/ui`：工作台演示页（客户输入界面）
+
+开发模式启动 UI：
+
+```bash
+npm run ui:dev
+```
+
+生成管理端截图：
+
+```bash
+npm run ui:screenshot
+```
 
 ## 错误处理约定
 

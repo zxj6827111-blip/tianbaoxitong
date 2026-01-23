@@ -3,3 +3,5 @@ node_modules
 coverage
 storage
 sample_unit.xlsx
+artifacts/ui/*.png
+ui/dist

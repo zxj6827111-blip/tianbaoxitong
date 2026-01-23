@@ -9,7 +9,11 @@
     "db:migrate": "node-pg-migrate up -m db/migrations",
     "db:rollback": "node-pg-migrate down -m db/migrations --count 1",
     "db:status": "node-pg-migrate status -m db/migrations",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "ui:dev": "vite --config ui/vite.config.ts",
+    "ui:build": "vite build --config ui/vite.config.ts",
+    "ui:preview": "vite preview --config ui/vite.config.ts --port 4173",
+    "ui:screenshot": "node scripts/ui/screenshot.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -18,11 +22,20 @@
     "express": "^4.19.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.1",
-    "pg": "^8.12.0"
+    "pg": "^8.12.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.2"
   },
   "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
     "jest": "^29.7.0",
     "node-pg-migrate": "^7.3.1",
-    "supertest": "^6.3.4"
+    "playwright": "^1.46.1",
+    "supertest": "^6.3.4",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.5"
   }
 }
