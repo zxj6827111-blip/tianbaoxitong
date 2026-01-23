@@ -1,17 +1,24 @@
 class AppError extends Error {
-  constructor({ statusCode, code, message }) {
+  constructor({ statusCode, code, message, details }) {
     super(message);
     this.statusCode = statusCode;
     this.code = code;
+    this.details = details;
   }
 }
 
 const errorHandler = (err, req, res, next) => {
   if (err instanceof AppError) {
-    return res.status(err.statusCode).json({
+    const payload = {
       code: err.code,
       message: err.message
-    });
+    };
+
+    if (err.details) {
+      payload.details = err.details;
+    }
+
+    return res.status(err.statusCode).json(payload);
   }
 
   console.error(err);

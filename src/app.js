@@ -1,6 +1,8 @@
 const express = require('express');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const uploadRoutes = require('./routes/uploads');
+const draftRoutes = require('./routes/drafts');
 const { AppError, errorHandler } = require('./errors');
 
 const app = express();
@@ -13,6 +15,8 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/uploads', uploadRoutes);
+app.use('/api/drafts', draftRoutes);
 
 app.post('/api/reports/:draftId/generate', (req, res, next) => {
   return next(new AppError({
