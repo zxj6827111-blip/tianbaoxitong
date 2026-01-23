@@ -11,6 +11,6 @@ exports.up = (pgm) => {
 };
 
 exports.down = (pgm) => {
-  pgm.dropIndex('report_draft', ['upload_id']);
+  pgm.dropIndex('report_draft', ['upload_id'], { ifExists: true });
   pgm.dropColumn('report_draft', 'upload_id');
 };
