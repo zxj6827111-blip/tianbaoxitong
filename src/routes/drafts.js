@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { AppError } = require('../errors');
 const { requireAuth } = require('../middleware/auth');
+const { fetchIssues, getDraftOrThrow, runValidation } = require('../services/validationEngine');
 
 const router = express.Router();
 
@@ -64,6 +65,59 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         pageSize
       },
       manual_inputs: manualInputsResult.rows
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/:id/validate', requireAuth, async (req, res, next) => {
+  try {
+    const result = await runValidation(req.params.id);
+    return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/:id/issues', requireAuth, async (req, res, next) => {
+  try {
+    await getDraftOrThrow(req.params.id);
+    const level = req.query.level || null;
+    const issues = await fetchIssues(req.params.id, level);
+
+    return res.json({
+      draft_id: req.params.id,
+      issues
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/:id/generate', requireAuth, async (req, res, next) => {
+  try {
+    await getDraftOrThrow(req.params.id);
+
+    let issues = await fetchIssues(req.params.id, null);
+    if (issues.length === 0) {
+      const validationResult = await runValidation(req.params.id);
+      issues = validationResult.issues;
+    }
+
+    const fatalIssues = issues.filter((issue) => issue.level === 'FATAL');
+    if (fatalIssues.length > 0) {
+      return res.status(400).json({
+        code: 'FATAL_VALIDATION',
+        message: 'Fatal validation issues prevent report generation',
+        fatal_count: fatalIssues.length,
+        issues
+      });
+    }
+
+    return res.status(501).json({
+      code: 'GEN_NOT_IMPLEMENTED',
+      message: 'Report generation is not implemented yet'
     });
   } catch (error) {
     return next(error);

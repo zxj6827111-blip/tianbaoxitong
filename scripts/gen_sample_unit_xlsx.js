@@ -5,6 +5,7 @@ const fs = require('node:fs/promises');
 const buildSampleUnitWorkbook = ({ year = 2024 } = {}) => {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet('预算汇总');
+  const fiscalSheet = workbook.addWorksheet('财政拨款收支总表');
 
   sheet.getCell('A1').value = '单位预算汇总表';
   sheet.getCell('A2').value = '单位名称';
@@ -40,6 +41,28 @@ const buildSampleUnitWorkbook = ({ year = 2024 } = {}) => {
   }
 
   sheet.columns.forEach((column) => {
+    column.width = 18;
+  });
+
+  fiscalSheet.getCell('A1').value = '财政拨款收支总表';
+  fiscalSheet.getCell('A3').value = '科目';
+  fiscalSheet.getCell('B3').value = '预算数（万元）';
+
+  const fiscalRows = [
+    ['拨款收入合计', 800.0],
+    ['拨款支出合计', 800.0]
+  ];
+
+  let fiscalRowIndex = 4;
+  for (const [label, value] of fiscalRows) {
+    fiscalSheet.getCell(`A${fiscalRowIndex}`).value = label;
+    const cell = fiscalSheet.getCell(`B${fiscalRowIndex}`);
+    cell.value = value;
+    cell.numFmt = '#,##0.00"万元"';
+    fiscalRowIndex += 1;
+  }
+
+  fiscalSheet.columns.forEach((column) => {
     column.width = 18;
   });
 

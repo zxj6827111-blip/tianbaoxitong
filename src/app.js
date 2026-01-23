@@ -18,14 +18,6 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/drafts', draftRoutes);
 
-app.post('/api/reports/:draftId/generate', (req, res, next) => {
-  return next(new AppError({
-    statusCode: 400,
-    code: 'GENERATE_FORBIDDEN',
-    message: 'Fatal validation issues prevent report generation'
-  }));
-});
-
 app.use((req, res, next) => {
   return next(new AppError({
     statusCode: 404,
