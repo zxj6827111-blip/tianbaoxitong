@@ -10,7 +10,7 @@ const getUserByEmail = async (email) => {
 
 const getUserWithRoles = async (userId) => {
   const userResult = await db.query(
-    'SELECT id, email, display_name FROM users WHERE id = $1',
+    'SELECT id, email, display_name, unit_id, department_id FROM users WHERE id = $1',
     [userId]
   );
 
