@@ -63,7 +63,14 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
     params
   );
 
-  return result.rows;
+  return result.rows.map(row => ({
+    ...row,
+    total_units: Number(row.total_units),
+    missing_archive: Number(row.missing_archive),
+    pending_suggestions: Number(row.pending_suggestions),
+    missing_baseinfo: Number(row.missing_baseinfo),
+    todo_units: Number(row.todo_units)
+  }));
 };
 
 const listUnits = async ({
@@ -203,7 +210,10 @@ const listUnits = async ({
 
   return {
     total: Number(countResult.rows[0]?.total || 0),
-    items: dataResult.rows
+    items: dataResult.rows.map(row => ({
+      ...row,
+      pending_count: Number(row.pending_count)
+    }))
   };
 };
 
@@ -287,6 +297,7 @@ const getUnitDetail = async ({ unitId, year }) => {
 
   return {
     ...unit,
+    pending_count: Number(unit.pending_count),
     audit_logs: auditLogs.rows
   };
 };
@@ -333,7 +344,14 @@ const getUnitBadges = async ({ unitId, year }) => {
     params
   );
 
-  return result.rows[0] || null;
+  const badge = result.rows[0] || null;
+  if (!badge) {
+    return null;
+  }
+  return {
+    ...badge,
+    pending_count: Number(badge.pending_count)
+  };
 };
 
 module.exports = {

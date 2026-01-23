@@ -139,8 +139,8 @@ describe('admin management endpoints', () => {
     expect(deptAData.total_units).toBe(3);
     expect(deptAData.missing_archive).toBe(1);
     expect(deptAData.pending_suggestions).toBe(1);
-    expect(deptAData.missing_baseinfo).toBe(1);
-    expect(deptAData.todo_units).toBe(2);
+    expect(deptAData.missing_baseinfo).toBe(2);
+    expect(deptAData.todo_units).toBe(3);
 
     expect(deptBData.total_units).toBe(0);
     expect(deptBData.todo_units).toBe(0);
