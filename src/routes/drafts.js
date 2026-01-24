@@ -2,6 +2,7 @@ const express = require('express');
 const db = require('../db');
 const { AppError } = require('../errors');
 const { requireAuth } = require('../middleware/auth');
+const { HISTORY_ACTUAL_KEYS } = require('../services/historyActualsConfig');
 const {
   LINE_ITEM_KEY_SET,
   buildLineItemsPreview,
@@ -10,6 +11,7 @@ const {
   getLineItems
 } = require('../services/lineItemsService');
 const { fetchIssues, getDraftOrThrow, runValidation } = require('../services/validationEngine');
+const { createSuggestion, listDraftSuggestions } = require('../repositories/suggestionRepository');
 
 const router = express.Router();
 
@@ -82,6 +84,91 @@ router.post('/:id/validate', requireAuth, async (req, res, next) => {
   try {
     const result = await runValidation(req.params.id);
     return res.json(result);
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/:id/suggestions', requireAuth, async (req, res, next) => {
+  try {
+    const draft = await getDraftOrThrow(req.params.id);
+    const key = req.body?.key;
+    const oldValue = req.body?.old_value;
+    const suggestValue = req.body?.suggest_value;
+    const reason = req.body?.reason;
+    const attachments = req.body?.attachments ?? null;
+
+    if (!key || typeof key !== 'string' || !HISTORY_ACTUAL_KEYS.includes(key)) {
+      throw new AppError({
+        statusCode: 422,
+        code: 'SUGGESTION_KEY_INVALID',
+        message: 'Invalid suggestion key'
+      });
+    }
+
+    if (suggestValue === null || suggestValue === undefined || Number.isNaN(Number(suggestValue))) {
+      throw new AppError({
+        statusCode: 422,
+        code: 'SUGGESTION_VALUE_INVALID',
+        message: 'suggest_value must be a number'
+      });
+    }
+
+    if (oldValue !== null && oldValue !== undefined && Number.isNaN(Number(oldValue))) {
+      throw new AppError({
+        statusCode: 422,
+        code: 'SUGGESTION_OLD_VALUE_INVALID',
+        message: 'old_value must be a number'
+      });
+    }
+
+    if (reason !== undefined && reason !== null && typeof reason !== 'string') {
+      throw new AppError({
+        statusCode: 422,
+        code: 'SUGGESTION_REASON_INVALID',
+        message: 'reason must be a string'
+      });
+    }
+
+    if (attachments !== null && attachments !== undefined && typeof attachments !== 'object') {
+      throw new AppError({
+        statusCode: 422,
+        code: 'SUGGESTION_ATTACHMENTS_INVALID',
+        message: 'attachments must be an object or array'
+      });
+    }
+
+    const unitResult = await db.query(
+      `SELECT department_id
+       FROM org_unit
+       WHERE id = $1`,
+      [draft.unit_id]
+    );
+
+    const suggestion = await createSuggestion({
+      draftId: draft.id,
+      unitId: draft.unit_id,
+      departmentId: unitResult.rows[0]?.department_id || null,
+      year: draft.year,
+      key,
+      oldValueWanyuan: oldValue === null || oldValue === undefined ? null : Number(oldValue),
+      suggestValueWanyuan: Number(suggestValue),
+      reason: reason === undefined ? null : reason,
+      attachments,
+      createdBy: req.user.id
+    });
+
+    return res.status(201).json({ suggestion });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/:id/suggestions', requireAuth, async (req, res, next) => {
+  try {
+    await getDraftOrThrow(req.params.id);
+    const suggestions = await listDraftSuggestions(req.params.id);
+    return res.json({ draft_id: req.params.id, suggestions });
   } catch (error) {
     return next(error);
   }

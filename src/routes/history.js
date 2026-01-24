@@ -3,6 +3,7 @@ const { AppError } = require('../errors');
 const { requireAuth } = require('../middleware/auth');
 const { HISTORY_ACTUAL_KEYS } = require('../services/historyActualsConfig');
 const { lookupHistoryActuals } = require('../repositories/historyRepository');
+const { fetchLatestSuggestions } = require('../repositories/suggestionRepository');
 
 const router = express.Router();
 
@@ -54,10 +55,20 @@ router.get('/lookup', requireAuth, async (req, res, next) => {
       });
     }
 
-    const rows = await lookupHistoryActuals({ unitId, year, keys });
+    const [rows, suggestions] = await Promise.all([
+      lookupHistoryActuals({ unitId, year, keys }),
+      fetchLatestSuggestions({ unitId, year, keys })
+    ]);
+
     const values = {};
     rows.forEach((row) => {
       values[row.key] = Number(row.value_numeric);
+    });
+
+    suggestions.forEach((row) => {
+      if (row.suggest_value_wanyuan !== null && row.suggest_value_wanyuan !== undefined) {
+        values[row.key] = Number(row.suggest_value_wanyuan);
+      }
     });
     const missingKeys = keys.filter((key) => !(key in values));
 
