@@ -1,6 +1,7 @@
 const express = require('express');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const adminSuggestionRoutes = require('./routes/adminSuggestions');
 const adminHistoryRoutes = require('./routes/adminHistory');
 const historyRoutes = require('./routes/history');
 const uploadRoutes = require('./routes/uploads');
@@ -17,6 +18,7 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin/suggestions', adminSuggestionRoutes);
 app.use('/api/admin/history', adminHistoryRoutes);
 app.use('/api/history', historyRoutes);
 app.use('/api/uploads', uploadRoutes);

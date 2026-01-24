@@ -140,6 +140,30 @@ const lookupHistoryActuals = async ({ unitId, year, keys }) => {
   return result.rows;
 };
 
+const upsertHistoryActualFromSuggestion = async ({
+  client,
+  unitId,
+  year,
+  key,
+  valueNumeric,
+  suggestionId
+}) => {
+  await client.query(
+    `
+      INSERT INTO history_actuals
+        (unit_id, year, stage, key, value_numeric, provenance_source, source_suggestion_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (unit_id, year, stage, key)
+      DO UPDATE SET
+        value_numeric = EXCLUDED.value_numeric,
+        provenance_source = EXCLUDED.provenance_source,
+        source_suggestion_id = EXCLUDED.source_suggestion_id,
+        updated_at = now()
+    `,
+    [unitId, year, 'FINAL', key, valueNumeric, 'suggestion', suggestionId]
+  );
+};
+
 module.exports = {
   fetchUnitMapByCodes,
   findLockedUnitYears,
@@ -147,5 +171,6 @@ module.exports = {
   updateHistoryBatch,
   insertHistoryActuals,
   lockHistoryBatch,
-  lookupHistoryActuals
+  lookupHistoryActuals,
+  upsertHistoryActualFromSuggestion
 };
