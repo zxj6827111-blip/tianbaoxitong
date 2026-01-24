@@ -1,5 +1,20 @@
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 
+jest.mock('../src/services/reportRenderer', () => ({
+  renderPdf: jest.fn().mockImplementation(async () => {
+    const fs = require('node:fs/promises');
+    await fs.writeFile('mock.pdf', 'dummy pdf content');
+    return { pdfPath: 'mock.pdf', pdfSha: 'mocksha' };
+  })
+}));
+jest.mock('../src/services/reportExcelService', () => ({
+  renderExcel: jest.fn().mockImplementation(async () => {
+    const fs = require('node:fs/promises');
+    await fs.writeFile('mock.xlsx', 'dummy excel content');
+    return { excelPath: 'mock.xlsx', excelSha: 'mocksha' };
+  })
+}));
+
 const request = require('supertest');
 const app = require('../src/app');
 const db = require('../src/db');
@@ -28,7 +43,7 @@ const seedReporter = async () => {
       (unit_id, year, stage, key, value_numeric)
      VALUES
       ($1, $2, $3, $4, $5)`,
-    [unit.rows[0].id, 2023, 'final', 'fiscal_grant_expenditure_personnel_prev', 100]
+    [unit.rows[0].id, 2023, 'FINAL', 'fiscal_grant_expenditure_personnel_prev', 100]
   );
 
   const passwordHash = await hashPassword('secret');

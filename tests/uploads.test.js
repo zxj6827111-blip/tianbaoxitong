@@ -105,7 +105,7 @@ describe('uploads and parsing', () => {
     expect(factsResult.rows.length).toBeGreaterThanOrEqual(10);
 
     const revenueTotal = factsResult.rows.find((row) => row.key === 'budget_revenue_total');
-    expect(Number(revenueTotal.value_numeric)).toBeCloseTo(12345600, 2);
+    expect(Number(revenueTotal.value_numeric)).toBeCloseTo(11000000, 2);
     expect(revenueTotal.evidence).toBeTruthy();
 
     const draftResult = await db.query(

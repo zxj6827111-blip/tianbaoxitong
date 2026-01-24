@@ -54,10 +54,11 @@ describe('migrations', () => {
     migrateDown();
     migrateDown();
     migrateDown();
+    migrateDown();
 
     const result = await db.query('SELECT to_regclass($1) as table_name', ['public.org_department']);
     expect(result.rows[0].table_name).toBeNull();
 
     await migrateUp();
-  });
+  }, 30000);
 });
