@@ -73,8 +73,8 @@ const uploadAndParse = async (token) => {
 };
 
 describe('report generation', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

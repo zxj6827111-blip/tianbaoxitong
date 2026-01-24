@@ -133,8 +133,8 @@ const createDraftWithFacts = async ({
 };
 
 describe('validation engine', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

@@ -47,8 +47,8 @@ const login = async () => {
 };
 
 describe('admin management endpoints', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

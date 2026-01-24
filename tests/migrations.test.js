@@ -2,8 +2,8 @@ const db = require('../src/db');
 const { migrateUp, migrateDown } = require('./helpers/migrations');
 
 describe('migrations', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   afterAll(async () => {
@@ -58,6 +58,6 @@ describe('migrations', () => {
     const result = await db.query('SELECT to_regclass($1) as table_name', ['public.org_department']);
     expect(result.rows[0].table_name).toBeNull();
 
-    migrateUp();
+    await migrateUp();
   });
 });

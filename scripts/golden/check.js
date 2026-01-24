@@ -1,3 +1,4 @@
+require('dotenv').config();
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const request = require('supertest');
@@ -7,6 +8,7 @@ const { migrateUp } = require('../../tests/helpers/migrations');
 const { hashPassword } = require('../../src/auth/password');
 const { generateSampleUnitBuffer } = require('../gen_sample_unit_xlsx');
 const { hashNormalizedPdf } = require('./normalizePdf');
+const { resetDb } = require('../../tests/helpers/dbUtils');
 
 const GOLDEN_DIR = path.resolve(process.cwd(), 'artifacts', 'golden');
 const GOLDEN_META_PATH = path.join(GOLDEN_DIR, 'report.json');
@@ -62,7 +64,8 @@ const loginReporter = async () => {
 
 const main = async () => {
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
-  migrateUp();
+  // await resetDb(); // migrateUp calls resetDb
+  await migrateUp();
 
   const metaText = await fs.readFile(GOLDEN_META_PATH, 'utf8');
   const meta = JSON.parse(metaText);
@@ -108,7 +111,13 @@ const main = async () => {
   const pdfResponse = await request(app)
     .get(`/api/report_versions/${reportVersionId}/download/pdf`)
     .set('Authorization', `Bearer ${token}`)
-    .buffer(true);
+    .set('Authorization', `Bearer ${token}`)
+    .parse((res, cb) => {
+      res.setEncoding('binary');
+      res.data = '';
+      res.on('data', (chunk) => res.data += chunk);
+      res.on('end', () => cb(null, Buffer.from(res.data, 'binary')));
+    });
 
   await fs.mkdir(GOLDEN_DIR, { recursive: true });
   const pdfPath = path.join(GOLDEN_DIR, 'report_check.pdf');

@@ -146,8 +146,8 @@ const createDraftWithLineItems = async ({ unitId, year, lineItemValues }) => {
 };
 
 describe('line items API', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

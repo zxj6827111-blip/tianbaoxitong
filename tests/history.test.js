@@ -55,8 +55,8 @@ const login = async (email) => {
 };
 
 describe('history actuals import and lookup', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

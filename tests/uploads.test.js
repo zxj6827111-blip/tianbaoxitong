@@ -52,8 +52,8 @@ const loginReporter = async () => {
 };
 
 describe('uploads and parsing', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

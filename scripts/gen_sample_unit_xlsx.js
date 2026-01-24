@@ -17,9 +17,9 @@ const buildSampleUnitWorkbook = ({ year = 2024 } = {}) => {
   sheet.getCell('B5').value = '预算数（万元）';
 
   const rows = [
-    ['收入合计', 1234.56],
+    ['收入合计', 1100.0],
     ['其中：财政拨款收入', 1000.0],
-    ['事业收入', 200.0],
+    ['事业收入', 65.44],
     ['其他收入', 34.56],
     ['支出合计', 1100.0],
     ['基本支出', 800.0],
@@ -28,7 +28,7 @@ const buildSampleUnitWorkbook = ({ year = 2024 } = {}) => {
     ['公用经费', 300.0],
     ['项目支出-资本性', 120.0],
     ['项目支出-非资本性', 180.0],
-    ['结余', 134.56]
+    ['结余', 0.0]
   ];
 
   let rowIndex = 6;
@@ -49,8 +49,8 @@ const buildSampleUnitWorkbook = ({ year = 2024 } = {}) => {
   fiscalSheet.getCell('B3').value = '预算数（万元）';
 
   const fiscalRows = [
-    ['拨款收入合计', 800.0],
-    ['拨款支出合计', 800.0]
+    ['拨款收入合计', 1000.0],
+    ['拨款支出合计', 1000.0]
   ];
 
   let fiscalRowIndex = 4;

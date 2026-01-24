@@ -1,3 +1,4 @@
+require('dotenv').config();
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const request = require('supertest');
@@ -66,7 +67,7 @@ const ensureGoldenDir = async () => {
 
 const main = async () => {
   process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
-  migrateUp();
+  await migrateUp();
 
   await db.query(`
     TRUNCATE history_actuals, manual_inputs, report_version, validation_issues, line_items_reason,
@@ -102,6 +103,7 @@ const main = async () => {
     .send();
 
   if (generateResponse.status !== 201) {
+    console.error('Generate failed details:', JSON.stringify(generateResponse.body, null, 2));
     throw new Error(`Generate failed: ${generateResponse.status}`);
   }
 
@@ -109,7 +111,18 @@ const main = async () => {
   const pdfResponse = await request(app)
     .get(`/api/report_versions/${reportVersionId}/download/pdf`)
     .set('Authorization', `Bearer ${token}`)
-    .buffer(true);
+    .set('Authorization', `Bearer ${token}`)
+    .parse((res, cb) => {
+      res.setEncoding('binary');
+      res.data = '';
+      res.on('data', (chunk) => res.data += chunk);
+      res.on('end', () => cb(null, Buffer.from(res.data, 'binary')));
+    });
+
+  if (pdfResponse.status !== 200) {
+    console.error('PDF download failed:', pdfResponse.status);
+    throw new Error(`PDF download failed: ${pdfResponse.status}`);
+  }
 
   await ensureGoldenDir();
   const pdfPath = path.join(GOLDEN_DIR, 'report.pdf');
@@ -119,7 +132,18 @@ const main = async () => {
   const excelResponse = await request(app)
     .get(`/api/report_versions/${reportVersionId}/download/excel`)
     .set('Authorization', `Bearer ${token}`)
-    .buffer(true);
+    .parse((res, cb) => {
+      res.setEncoding('binary');
+      res.data = '';
+      res.on('data', (chunk) => res.data += chunk);
+      res.on('end', () => cb(null, Buffer.from(res.data, 'binary')));
+    });
+
+  if (excelResponse.status !== 200) {
+    console.error('Excel download failed:', excelResponse.status);
+    throw new Error(`Excel download failed: ${excelResponse.status}`);
+  }
+
 
   const excelPath = path.join(GOLDEN_DIR, 'report.xlsx');
   await fs.writeFile(excelPath, excelResponse.body);
