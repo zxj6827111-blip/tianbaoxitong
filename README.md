@@ -80,6 +80,15 @@ pnpm golden:check
 - `POST /api/drafts/:id/generate`：生成报告版本（Fatal 禁止生成）
 - `GET /api/report_versions/:id/download/pdf`：下载 PDF
 - `GET /api/report_versions/:id/download/excel`：下载 Excel
+- `GET /api/final/health`：二期决算预留接口（始终 501）
+
+## PR-09（二期预留口子）
+
+当前仅实现一期预算逻辑；二期决算相关能力（解析、校验、导出、预算-决算对比）暂未实现。为二期预留以下口子：
+
+- 数据模型新增 `stage` 字段（`BUDGET`/`FINAL`），预算数据默认 `BUDGET`，历史决算归档默认 `FINAL`。
+- 决算表码与解析映射仅保留空的常量定义（见 `src/services/finalMapping.js`），不实现决算解析逻辑。
+- 新增 `/api/final/*` 路由，默认返回 `501 NOT_IMPLEMENTED`。可通过 `FINAL_ENABLED=false` 进行 feature flag 关闭控制，但即使启用也仍返回 501，等待二期实现。
 
 ## 管理端 UI（PR-05）
 

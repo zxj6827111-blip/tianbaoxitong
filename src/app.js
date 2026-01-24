@@ -7,6 +7,7 @@ const historyRoutes = require('./routes/history');
 const uploadRoutes = require('./routes/uploads');
 const draftRoutes = require('./routes/drafts');
 const reportVersionRoutes = require('./routes/reportVersions');
+const finalRoutes = require('./routes/final');
 const { AppError, errorHandler } = require('./errors');
 
 const app = express();
@@ -25,6 +26,7 @@ app.use('/api/history', historyRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/drafts', draftRoutes);
 app.use('/api/report_versions', reportVersionRoutes);
+app.use('/api/final', finalRoutes);
 
 app.use((req, res, next) => {
   return next(new AppError({
