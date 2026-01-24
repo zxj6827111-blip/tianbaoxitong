@@ -10,6 +10,8 @@
     "db:rollback": "node-pg-migrate down -m db/migrations --count 1",
     "db:status": "node-pg-migrate status -m db/migrations",
     "test": "jest --runInBand",
+    "golden:update": "node scripts/golden/update.js",
+    "golden:check": "node scripts/golden/check.js",
     "ui:dev": "vite --config ui/vite.config.ts",
     "ui:build": "vite build --config ui/vite.config.ts",
     "ui:preview": "vite preview --config ui/vite.config.ts --port 4173",

@@ -62,11 +62,13 @@ describe('history actuals import and lookup', () => {
   beforeEach(async () => {
     await db.query(
       `TRUNCATE history_actuals,
-                history_import_batch,
-                user_roles,
-                users,
-                org_unit,
-                org_department
+        history_import_batch,
+        report_version,
+        report_draft,
+        user_roles,
+        users,
+        org_unit,
+        org_department
        RESTART IDENTITY CASCADE`
     );
   });

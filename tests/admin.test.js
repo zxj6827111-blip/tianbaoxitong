@@ -56,6 +56,7 @@ describe('admin management endpoints', () => {
       `TRUNCATE correction_suggestion,
                 history_actuals,
                 base_info_version,
+                report_version,
                 report_draft,
                 audit_log,
                 user_roles,

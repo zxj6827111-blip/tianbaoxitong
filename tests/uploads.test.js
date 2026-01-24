@@ -58,7 +58,7 @@ describe('uploads and parsing', () => {
 
   beforeEach(async () => {
     await db.query(`
-      TRUNCATE manual_inputs, report_draft, facts_budget, parsed_cells, upload_job,
+      TRUNCATE manual_inputs, report_version, report_draft, facts_budget, parsed_cells, upload_job,
         user_roles, users, org_unit, org_department
       RESTART IDENTITY CASCADE
     `);

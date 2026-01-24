@@ -83,7 +83,9 @@ const fetchReasonThreshold = async () => {
 const getLineItemDefinition = (itemKey) => LINE_ITEM_DEFINITIONS.find((item) => item.item_key === itemKey);
 
 const getLineItems = async ({ draftId, uploadId, threshold }) => {
-  const resolvedThreshold = resolveReasonThreshold(threshold);
+  const resolvedThreshold = threshold === undefined || threshold === null
+    ? DEFAULT_REASON_THRESHOLD
+    : resolveReasonThreshold(threshold);
   const factKeys = Array.from(new Set([
     ...LINE_ITEM_DEFINITIONS.map((item) => item.current_key),
     ...LINE_ITEM_DEFINITIONS.map((item) => item.prev_key).filter(Boolean)

@@ -57,6 +57,15 @@ npm run dev
 npm test
 ```
 
+### 黄金样回归
+
+```bash
+pnpm golden:update
+pnpm golden:check
+```
+
+黄金样输出目录：`artifacts/golden/`。
+
 ## API 最小骨架
 
 - `GET /api/health`：公开健康检查
@@ -68,7 +77,9 @@ npm test
 - `GET /api/admin/units?department_id=&q=&filter=&page=&pageSize=&year=`：管理端单位列表
 - `GET /api/admin/units/:unitId?year=`：管理端单位详情
 - `GET /api/admin/units/:unitId/badges?year=`：管理端单位徽标聚合
-- `POST /api/reports/:draftId/generate`：当前恒定返回 400（Fatal 禁止生成骨架）
+- `POST /api/drafts/:id/generate`：生成报告版本（Fatal 禁止生成）
+- `GET /api/report_versions/:id/download/pdf`：下载 PDF
+- `GET /api/report_versions/:id/download/excel`：下载 Excel
 
 ## 管理端 UI（PR-05）
 
