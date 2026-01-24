@@ -15,3 +15,6 @@ X/
 .DS_Store
 dist/
 build/
+.agent/
+artifacts/
+sample.xlsx
