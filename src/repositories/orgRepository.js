@@ -40,6 +40,7 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
              d.code,
              d.name,
              d.parent_id,
+             d.sort_order,
              d.created_at,
              d.updated_at,
              COALESCE(COUNT(u.id), 0) AS total_units,
@@ -58,7 +59,7 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
       LEFT JOIN org_unit u ON u.department_id = d.id
       LEFT JOIN unit_status ON unit_status.id = u.id
       GROUP BY d.id
-      ORDER BY d.name ASC
+      ORDER BY d.sort_order ASC, d.name ASC
     `,
     params
   );
@@ -184,6 +185,7 @@ const listUnits = async ({
            u.code,
            u.name,
            u.department_id,
+           u.sort_order,
            u.updated_at,
            CASE
              WHEN archive.archive_count IS NULL THEN 'missing'
@@ -199,7 +201,7 @@ const listUnits = async ({
     LEFT JOIN baseinfo ON baseinfo.unit_id = u.id
     LEFT JOIN draft ON draft.unit_id = u.id
     ${whereClause}
-    ORDER BY u.name ASC
+    ORDER BY u.sort_order ASC, u.name ASC
     LIMIT $${params.length - 1} OFFSET $${params.length}
   `;
 

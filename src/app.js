@@ -1,6 +1,9 @@
 const express = require('express');
+const cors = require('cors');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
+const adminOrgRoutes = require('./routes/adminOrg');
+const adminArchivesRoutes = require('./routes/adminArchives');
 const adminSuggestionRoutes = require('./routes/adminSuggestions');
 const adminHistoryRoutes = require('./routes/adminHistory');
 const historyRoutes = require('./routes/history');
@@ -12,6 +15,12 @@ const { AppError, errorHandler } = require('./errors');
 
 const app = express();
 
+// CORS配置 - 允许前端访问
+app.use(cors({
+  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'],
+  credentials: true
+}));
+
 app.use(express.json());
 
 app.get('/api/health', (req, res) => {
@@ -20,6 +29,8 @@ app.get('/api/health', (req, res) => {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/admin/org', adminOrgRoutes);
+app.use('/api/admin/archives', adminArchivesRoutes);
 app.use('/api/admin/suggestions', adminSuggestionRoutes);
 app.use('/api/admin/history', adminHistoryRoutes);
 app.use('/api/history', historyRoutes);

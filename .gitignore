@@ -5,3 +5,13 @@ storage
 sample_unit.xlsx
 artifacts/ui/*.png
 ui/dist
+ui/node_modules
+ui/.vite
+.jest_cache
+temp/
+storage/
+X/
+*.log
+.DS_Store
+dist/
+build/

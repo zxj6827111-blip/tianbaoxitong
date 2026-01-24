@@ -39,7 +39,21 @@ router.post('/login', async (req, res, next) => {
   }
 
   const token = signToken({ userId: user.id });
-  return res.json({ token });
+  
+  // 获取用户角色
+  const userWithRoles = await getUserWithRoles(user.id);
+  
+  return res.json({ 
+    token,
+    user: {
+      id: userWithRoles.id,
+      username: userWithRoles.email,
+      email: userWithRoles.email,
+      role: userWithRoles.roles[0] || 'reporter',
+      unit_id: userWithRoles.unit_id,
+      department_id: userWithRoles.department_id
+    }
+  });
 });
 
 router.get('/me', requireAuth, async (req, res) => {
