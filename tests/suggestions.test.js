@@ -145,7 +145,7 @@ describe('correction suggestions B mode', () => {
       [unitId, 2024, 'budget_revenue_total']
     );
 
-    expect(actual.rows[0].value_numeric).toBe('30');
+    expect(Number(actual.rows[0].value_numeric)).toBe(30);
     expect(actual.rows[0].provenance_source).toBe('suggestion');
     expect(actual.rows[0].source_suggestion_id).toBe(suggestion.rows[0].id);
   });

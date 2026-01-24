@@ -34,7 +34,8 @@ const run = async () => {
   const devServer = spawn('npm', ['run', 'ui:dev'], {
     cwd: ROOT_DIR,
     stdio: 'inherit',
-    env: { ...process.env }
+    env: { ...process.env },
+    shell: true
   });
 
   let browser;

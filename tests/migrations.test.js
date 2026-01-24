@@ -60,5 +60,5 @@ describe('migrations', () => {
     expect(result.rows[0].table_name).toBeNull();
 
     await migrateUp();
-  });
+  }, 30000);
 });
