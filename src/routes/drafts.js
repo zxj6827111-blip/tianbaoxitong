@@ -11,6 +11,7 @@ const {
   getLineItems
 } = require('../services/lineItemsService');
 const { fetchIssues, getDraftOrThrow, runValidation } = require('../services/validationEngine');
+const { generateReportVersion } = require('../services/reportService');
 const { createSuggestion, listDraftSuggestions } = require('../repositories/suggestionRepository');
 
 const router = express.Router();
@@ -326,9 +327,13 @@ router.post('/:id/generate', requireAuth, async (req, res, next) => {
       });
     }
 
-    return res.status(501).json({
-      code: 'GEN_NOT_IMPLEMENTED',
-      message: 'Report generation is not implemented yet'
+    const result = await generateReportVersion({
+      draftId: req.params.id,
+      userId: req.user.id
+    });
+
+    return res.status(201).json({
+      report_version_id: result.reportVersionId
     });
   } catch (error) {
     return next(error);

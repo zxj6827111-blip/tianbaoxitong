@@ -41,8 +41,8 @@ const seedUserWithRole = async (roleName) => {
 };
 
 describe('auth', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

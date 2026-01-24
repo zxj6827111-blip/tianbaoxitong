@@ -133,13 +133,13 @@ const createDraftWithFacts = async ({
 };
 
 describe('validation engine', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {
     await db.query(`
-      TRUNCATE validation_issues, manual_inputs, line_items_reason, report_draft, facts_budget,
+      TRUNCATE report_version, validation_issues, manual_inputs, line_items_reason, report_draft, facts_budget,
         parsed_cells, upload_job, user_roles, users, org_unit, org_department
       RESTART IDENTITY CASCADE
     `);

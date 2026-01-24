@@ -55,18 +55,20 @@ const login = async (email) => {
 };
 
 describe('history actuals import and lookup', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {
     await db.query(
       `TRUNCATE history_actuals,
-                history_import_batch,
-                user_roles,
-                users,
-                org_unit,
-                org_department
+        history_import_batch,
+        report_version,
+        report_draft,
+        user_roles,
+        users,
+        org_unit,
+        org_department
        RESTART IDENTITY CASCADE`
     );
   });

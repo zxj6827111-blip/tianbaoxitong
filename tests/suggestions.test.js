@@ -62,8 +62,8 @@ const createDraft = async ({ unitId, year, userId }) => {
 };
 
 describe('correction suggestions B mode', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

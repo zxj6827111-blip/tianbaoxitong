@@ -3,8 +3,8 @@ const { migrateUp } = require('./helpers/migrations');
 const { hashPassword } = require('../src/auth/password');
 
 describe('constraints', () => {
-  beforeAll(() => {
-    migrateUp();
+  beforeAll(async () => {
+    await migrateUp();
   });
 
   beforeEach(async () => {

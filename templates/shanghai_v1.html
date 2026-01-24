@@ -1,0 +1,41 @@
+<div class="report">
+  <h1>预算报告</h1>
+  <p>单位名称：{{ manual:unit_full_name }}</p>
+  <p>联系人：{{ manual:report_contact }}</p>
+
+  <h2>预算汇总</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>指标</th>
+        <th>预算数（万元）</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>收入合计</td><td>{{ fact:budget_revenue_total }}</td></tr>
+      <tr><td>其中：财政拨款收入</td><td>{{ fact:budget_revenue_fiscal }}</td></tr>
+      <tr><td>事业收入</td><td>{{ fact:budget_revenue_business }}</td></tr>
+      <tr><td>其他收入</td><td>{{ fact:budget_revenue_other }}</td></tr>
+      <tr><td>支出合计</td><td>{{ fact:budget_expenditure_total }}</td></tr>
+      <tr><td>基本支出</td><td>{{ fact:budget_expenditure_basic }}</td></tr>
+      <tr><td>项目支出</td><td>{{ fact:budget_expenditure_project }}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>财政拨款收支</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>指标</th>
+        <th>预算数（万元）</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>拨款收入合计</td><td>{{ fact:fiscal_grant_revenue_total }}</td></tr>
+      <tr><td>拨款支出合计</td><td>{{ fact:fiscal_grant_expenditure_total }}</td></tr>
+    </tbody>
+  </table>
+
+  <h2>原因说明</h2>
+  {{ line_items_reason }}
+</div>
