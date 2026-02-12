@@ -3,27 +3,35 @@ import { apiClient } from '../../utils/apiClient';
 
 interface LineItem {
   item_key: string;
-  label: string;
-  current_value?: number;
-  last_year_value?: number;
-  change_amount?: number;
-  change_percent?: number;
-  reason_text?: string;
-  needs_reason: boolean;
+  item_label: string;
+  amount_current_wanyuan?: number | null;
+  amount_prev_wanyuan?: number | null;
+  change_ratio?: number | null;
+  reason_text?: string | null;
+  previous_reason_text?: string | null;
+  reason_required: boolean;
   order_no: number;
 }
 
 interface LineItemsEditorProps {
-  draftId: number;
-  onSave?: () => void;
+  draftId: string;
+  ifMatchUpdatedAt?: string | null;
+  onSave?: (result: any) => void;
+  onStatsChange?: (stats: { total: number; required: number; missing: number }) => void;
 }
 
-export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, onSave }) => {
+const calculateStats = (items: LineItem[]) => ({
+  total: items.length,
+  required: items.filter((item) => item.reason_required).length,
+  missing: items.filter((item) => item.reason_required && !(item.reason_text || '').trim()).length
+});
+
+export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, ifMatchUpdatedAt, onSave, onStatsChange }) => {
   const [items, setItems] = useState<LineItem[]>([]);
   const [threshold, setThreshold] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [filter, setFilter] = useState<'all' | 'needs_reason' | 'missing'>('needs_reason');
+  const [filter, setFilter] = useState<'all' | 'needs_reason' | 'missing'>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
   useEffect(() => {
@@ -34,8 +42,10 @@ export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, onSav
     try {
       setIsLoading(true);
       const response = await apiClient.getLineItems(draftId);
-      setItems(response.items || []);
+      const nextItems = response.items || [];
+      setItems(nextItems);
       setThreshold(response.threshold || 0);
+      onStatsChange?.(calculateStats(nextItems));
     } catch (error) {
       console.error('Failed to load line items:', error);
     } finally {
@@ -44,11 +54,23 @@ export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, onSav
   };
 
   const handleReasonChange = (itemKey: string, reason: string) => {
-    setItems((prev) =>
-      prev.map((item) =>
+    setItems((prev) => {
+      const nextItems = prev.map((item) =>
         item.item_key === itemKey ? { ...item, reason_text: reason } : item
-      )
-    );
+      );
+      onStatsChange?.(calculateStats(nextItems));
+      return nextItems;
+    });
+  };
+
+  const buildDefaultReasonText = (item: LineItem) => {
+    const label = item.item_label || '';
+    const current = Number(item.amount_current_wanyuan ?? 0).toFixed(2);
+    const prev = Number(item.amount_prev_wanyuan ?? 0).toFixed(2);
+    let reason = (item.previous_reason_text || '').trim();
+    reason = reason.replace(/^主要(原因是)?[:：]?\s*/, '').trim();
+    if (!reason) reason = '原因待补充';
+    return `“${label}”${current}万元，上年:${prev}万元，主要${reason}。`;
   };
 
   const handleSave = async () => {
@@ -60,11 +82,15 @@ export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, onSav
         order_no: item.order_no,
       }));
 
-      await apiClient.updateLineItems(draftId, itemsToSave);
-      onSave?.();
+      const response = await apiClient.updateLineItems(draftId, {
+        items: itemsToSave,
+        if_match_updated_at: ifMatchUpdatedAt || undefined
+      });
+      onStatsChange?.(calculateStats(items));
+      onSave?.(response);
     } catch (error) {
       console.error('Failed to save line items:', error);
-      alert('保存失败,请重试');
+      alert('保存失败，可能是草稿已被他人更新，请刷新后重试');
     } finally {
       setIsSaving(false);
     }
@@ -72,20 +98,20 @@ export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, onSav
 
   const filteredItems = items.filter((item) => {
     // 搜索过滤
-    if (searchTerm && !item.label.toLowerCase().includes(searchTerm.toLowerCase())) {
+    if (searchTerm && !item.item_label.toLowerCase().includes(searchTerm.toLowerCase())) {
       return false;
     }
 
     // 类型过滤
     if (filter === 'needs_reason') {
-      return item.needs_reason;
+      return item.reason_required;
     } else if (filter === 'missing') {
-      return item.needs_reason && !item.reason_text;
+      return item.reason_required && !(item.reason_text || '').trim();
     }
     return true;
   });
 
-  const missingCount = items.filter((item) => item.needs_reason && !item.reason_text).length;
+  const missingCount = items.filter((item) => item.reason_required && !(item.reason_text || '').trim()).length;
 
   if (isLoading) {
     return <div className="text-center py-8">加载中...</div>;
@@ -120,44 +146,67 @@ export const LineItemsEditor: React.FC<LineItemsEditorProps> = ({ draftId, onSav
       </div>
 
       <div className="space-y-3 max-h-96 overflow-y-auto">
-        {filteredItems.map((item) => (
-          <div
-            key={item.item_key}
-            className={`p-4 border rounded-lg ${
-              item.needs_reason && !item.reason_text ? 'border-red-300 bg-red-50' : 'border-gray-200'
-            }`}
-          >
-            <div className="flex items-start justify-between mb-2">
-              <div className="flex-1">
-                <h4 className="font-medium text-gray-900">{item.label}</h4>
-                <div className="mt-1 text-sm text-gray-600 space-x-4">
-                  <span>本年: {item.current_value?.toFixed(2) || 0} 万元</span>
-                  <span>上年: {item.last_year_value?.toFixed(2) || 0} 万元</span>
-                  {item.change_amount !== undefined && (
-                    <span className={item.change_amount >= 0 ? 'text-green-600' : 'text-red-600'}>
-                      变动: {item.change_amount >= 0 ? '+' : ''}{item.change_amount.toFixed(2)} 万元
-                      ({item.change_percent?.toFixed(1)}%)
-                    </span>
-                  )}
+        {filteredItems.map((item) => {
+          const changeAmount = (item.amount_current_wanyuan !== null && item.amount_current_wanyuan !== undefined &&
+            item.amount_prev_wanyuan !== null && item.amount_prev_wanyuan !== undefined)
+            ? item.amount_current_wanyuan - item.amount_prev_wanyuan
+            : undefined;
+          const changePercent = item.change_ratio !== null && item.change_ratio !== undefined
+            ? item.change_ratio * 100
+            : undefined;
+
+          return (
+            <div
+              key={item.item_key}
+              className={`p-4 border rounded-lg ${item.reason_required && !(item.reason_text || '').trim() ? 'border-red-300 bg-red-50' : 'border-gray-200'
+                }`}
+            >
+              <div className="flex items-start justify-between mb-2">
+                <div className="flex-1">
+                  <h4 className="font-medium text-gray-900">{item.item_label}</h4>
+                  <div className="mt-1 text-sm text-gray-600 space-x-4">
+                    <span>本年: {item.amount_current_wanyuan?.toFixed(2) || 0} 万元</span>
+                    <span>上年: {item.amount_prev_wanyuan?.toFixed(2) || 0} 万元</span>
+                    {changeAmount !== undefined && (
+                      <span className={changeAmount >= 0 ? 'text-green-600' : 'text-red-600'}>
+                        变动: {changeAmount >= 0 ? '+' : ''}{changeAmount.toFixed(2)} 万元
+                        {changePercent !== undefined && ` (${changePercent.toFixed(1)}%)`}
+                      </span>
+                    )}
+                  </div>
                 </div>
+                {item.reason_required && (
+                  <span className="px-2 py-1 text-xs font-semibold bg-yellow-100 text-yellow-800 rounded">
+                    需填原因
+                  </span>
+                )}
               </div>
-              {item.needs_reason && (
-                <span className="px-2 py-1 text-xs font-semibold bg-yellow-100 text-yellow-800 rounded">
-                  需填原因
-                </span>
+              <textarea
+                value={item.reason_text || ''}
+                onChange={(e) => handleReasonChange(item.item_key, e.target.value)}
+                placeholder={item.reason_required ? '请填写变动原因...' : '可选填写说明...'}
+                className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${item.reason_required && !(item.reason_text || '').trim() ? 'border-red-300' : 'border-gray-300'
+                  }`}
+                rows={2}
+              />
+              {item.previous_reason_text && (
+                <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="font-medium text-slate-700">去年说明</span>
+                    <button
+                      type="button"
+                      onClick={() => handleReasonChange(item.item_key, buildDefaultReasonText(item))}
+                      className="text-xs text-brand-600 hover:text-brand-700"
+                    >
+                      复用去年
+                    </button>
+                  </div>
+                  <div className="whitespace-pre-wrap">{item.previous_reason_text}</div>
+                </div>
               )}
             </div>
-            <textarea
-              value={item.reason_text || ''}
-              onChange={(e) => handleReasonChange(item.item_key, e.target.value)}
-              placeholder={item.needs_reason ? '请填写变动原因...' : '可选填写说明...'}
-              className={`w-full px-3 py-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                item.needs_reason && !item.reason_text ? 'border-red-300' : 'border-gray-300'
-              }`}
-              rows={2}
-            />
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {filteredItems.length === 0 && (

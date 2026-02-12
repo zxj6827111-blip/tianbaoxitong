@@ -1,4 +1,4 @@
-const fs = require('node:fs/promises');
+﻿const fs = require('node:fs/promises');
 const path = require('node:path');
 
 const templateDir = path.resolve(process.cwd(), 'templates');
@@ -65,12 +65,21 @@ const applyTemplate = ({ html, values }) => {
 
   output = output.replace(/\{\{\s*line_items_reason\s*\}\}/g, () => {
     if (!Array.isArray(values.line_items_reason) || values.line_items_reason.length === 0) {
-      return '';
+      return '<p>无主要项目支出。</p>';
     }
-    const listItems = values.line_items_reason.map((item) => (
-      `<li>${escapeHtml(item.item_label)}：${escapeHtml(item.reason_text || '')}</li>`
-    ));
-    return `<ul class="line-items">${listItems.join('')}</ul>`;
+    const listItems = values.line_items_reason.map((item, index) => {
+      const reasonText = item.reason_text ? String(item.reason_text).trim() : '';
+      const hasAmount = reasonText.includes('万元');
+      const label = escapeHtml(item.item_label || '');
+      const current = Number(item.amount_current_wanyuan ?? 0).toFixed(2);
+      const prev = Number(item.amount_prev_wanyuan ?? 0).toFixed(2);
+      if (reasonText && hasAmount) {
+        return `<li>${index + 1}. ${escapeHtml(reasonText)}</li>`;
+      }
+      const reasonSnippet = reasonText ? reasonText : '原因待补充';
+      return `<li>${index + 1}. “${label}”${current}万元，上年:${prev}万元，主要${escapeHtml(reasonSnippet)}。</li>`;
+    });
+    return `<ul class="line-items" style="list-style: none; padding: 0;">${listItems.join('')}</ul>`;
   });
 
   return output;

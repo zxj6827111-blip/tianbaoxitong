@@ -20,7 +20,8 @@ export const LoginPage: React.FC = () => {
       await login(username, password);
       navigate('/workbench');
     } catch (err: any) {
-      setError(err.response?.data?.message || '登录失败，请检查用户名和密码');
+      const errorMessage = err.response?.data?.message || err.message || '登录失败，请检查用户名和密码';
+      setError(errorMessage);
     } finally {
       setIsLoading(false);
     }
@@ -121,7 +122,7 @@ export const LoginPage: React.FC = () => {
             </div>
           </div>
         </div>
-        
+
         <p className="text-center text-slate-400 text-xs mt-6">
           © {new Date().getFullYear()} 谷歌反重力开发组. All rights reserved.
         </p>

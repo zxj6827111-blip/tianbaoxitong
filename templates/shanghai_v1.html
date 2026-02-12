@@ -1,41 +1,209 @@
-<div class="report">
-  <h1>预算报告</h1>
-  <p>单位名称：{{ manual:unit_full_name }}</p>
-  <p>联系人：{{ manual:report_contact }}</p>
+<style>
+  .report-container {
+    font-family: "SimSun", "Songti SC", serif;
+    color: #000;
+    max-width: 100%;
+  }
 
-  <h2>预算汇总</h2>
-  <table>
+  .main-title {
+    text-align: center;
+    font-size: 26pt;
+    font-weight: bold;
+    margin-top: 20px;
+    margin-bottom: 40px;
+    font-family: "SimHei", "Heiti SC", sans-serif;
+    letter-spacing: 2px;
+  }
+
+  .info-table {
+    width: 100%;
+    margin-bottom: 20px;
+    font-size: 14pt;
+    border: none;
+  }
+
+  .info-table td {
+    border: none;
+    padding: 5px 0;
+  }
+
+  .section-title {
+    font-size: 18pt;
+    font-weight: bold;
+    margin-top: 30px;
+    margin-bottom: 15px;
+    font-family: "SimHei", "Heiti SC", sans-serif;
+    border-bottom: 2px solid #000;
+    /* Add underline for section headers */
+    padding-bottom: 5px;
+  }
+
+  p {
+    text-indent: 2em;
+    margin-bottom: 10px;
+    text-align: justify;
+  }
+
+  /* Data Tables */
+  table.data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 20px;
+    font-size: 12pt;
+    border: 2px solid #000;
+    /* Thicker outer border */
+  }
+
+  table.data-table th,
+  table.data-table td {
+    border: 1px solid #000;
+    /* Standard inner borders */
+    padding: 10px 8px;
+  }
+
+  table.data-table th {
+    background-color: #f8f9fa;
+    text-align: center;
+    font-weight: bold;
+    font-family: "SimHei", "Heiti SC", sans-serif;
+  }
+
+  table.data-table td:nth-child(2) {
+    text-align: right;
+    font-family: "Arial", sans-serif;
+    width: 150px;
+  }
+
+  /* Indentation for sub-items in table */
+  .indent-1 {
+    padding-left: 2em;
+  }
+
+  ul.line-items {
+    list-style-type: none;
+    padding: 0;
+    margin: 0;
+  }
+
+  ul.line-items li {
+    margin-bottom: 8px;
+    padding-left: 2em;
+    position: relative;
+    text-align: justify;
+  }
+
+  /* Custom bullet point with indentation */
+  ul.line-items li::before {
+    content: "•";
+    position: absolute;
+    left: 0.5em;
+    font-weight: bold;
+  }
+</style>
+
+<div class="report-container">
+  <!-- Title -->
+  <div class="main-title">{{ manual:unit_full_name }} 2024年预算公开报告</div>
+
+  <!-- Basic Info Header -->
+  <table class="info-table">
+    <tr>
+      <td style="width: 60%;"><strong>单位名称：</strong>{{ manual:unit_full_name }}</td>
+      <td style="width: 40%; text-align: right;"><strong>联系人：</strong>{{ manual:report_contact }}</td>
+    </tr>
+  </table>
+
+  <!-- Section 1: Basic Info -->
+  <div class="section-title">一、单位基本情况</div>
+  <p><strong>(一) 主要职能</strong></p>
+  <p>{{ manual:main_functions }}</p>
+
+  <p><strong>(二) 机构设置</strong></p>
+  <p>{{ manual:organizational_structure }}</p>
+
+  <!-- Section 2: Budget Summary -->
+  <div class="section-title">二、预算汇总情况</div>
+  <table class="data-table">
     <thead>
       <tr>
-        <th>指标</th>
+        <th>项目</th>
         <th>预算数（万元）</th>
       </tr>
     </thead>
     <tbody>
-      <tr><td>收入合计</td><td>{{ fact:budget_revenue_total }}</td></tr>
-      <tr><td>其中：财政拨款收入</td><td>{{ fact:budget_revenue_fiscal }}</td></tr>
-      <tr><td>事业收入</td><td>{{ fact:budget_revenue_business }}</td></tr>
-      <tr><td>其他收入</td><td>{{ fact:budget_revenue_other }}</td></tr>
-      <tr><td>支出合计</td><td>{{ fact:budget_expenditure_total }}</td></tr>
-      <tr><td>基本支出</td><td>{{ fact:budget_expenditure_basic }}</td></tr>
-      <tr><td>项目支出</td><td>{{ fact:budget_expenditure_project }}</td></tr>
+      <tr>
+        <td style="font-weight: bold; text-align: center;">收入合计</td>
+        <td style="font-weight: bold;">{{ fact:budget_revenue_total }}</td>
+      </tr>
+      <tr>
+        <td class="indent-1">其中：财政拨款收入</td>
+        <td>{{ fact:budget_revenue_fiscal }}</td>
+      </tr>
+      <tr>
+        <td class="indent-1">事业收入</td>
+        <td>{{ fact:budget_revenue_business }}</td>
+      </tr>
+      <tr>
+        <td class="indent-1">其他收入</td>
+        <td>{{ fact:budget_revenue_other }}</td>
+      </tr>
+      <tr>
+        <td style="font-weight: bold; text-align: center;">支出合计</td>
+        <td style="font-weight: bold;">{{ fact:budget_expenditure_total }}</td>
+      </tr>
+      <tr>
+        <td class="indent-1">基本支出</td>
+        <td>{{ fact:budget_expenditure_basic }}</td>
+      </tr>
+      <tr>
+        <td class="indent-1">项目支出</td>
+        <td>{{ fact:budget_expenditure_project }}</td>
+      </tr>
     </tbody>
   </table>
 
-  <h2>财政拨款收支</h2>
-  <table>
+  <!-- Section 3: Fiscal Grants -->
+  <div class="section-title">三、财政拨款收支情况</div>
+  <table class="data-table">
     <thead>
       <tr>
-        <th>指标</th>
+        <th>项目</th>
         <th>预算数（万元）</th>
       </tr>
     </thead>
     <tbody>
-      <tr><td>拨款收入合计</td><td>{{ fact:fiscal_grant_revenue_total }}</td></tr>
-      <tr><td>拨款支出合计</td><td>{{ fact:fiscal_grant_expenditure_total }}</td></tr>
+      <tr>
+        <td>拨款收入合计</td>
+        <td>{{ fact:fiscal_grant_revenue_total }}</td>
+      </tr>
+      <tr>
+        <td>拨款支出合计</td>
+        <td>{{ fact:fiscal_grant_expenditure_total }}</td>
+      </tr>
     </tbody>
   </table>
 
-  <h2>原因说明</h2>
+  <!-- Section 4: Budget Changes -->
+  <div class="section-title">四、预算变动说明</div>
+  <p>{{ manual:budget_explanation }}</p>
+  <p>财政拨款收入支出增加（减少）的主要原因是{{ manual:budget_change_reason }}</p>
+  <p>财政拨款支出主要内容如下：</p>
   {{ line_items_reason }}
+
+  <!-- Section 5: State-owned Assets (New Requirement) -->
+  <div class="section-title">五、国有资产占有使用情况</div>
+  <p>{{ manual:state_owned_assets || '截至2024年8月31日，本单位共有车辆0辆...' }}</p>
+
+  <!-- Section 6: Glossary -->
+  <div class="section-title">六、名词解释</div>
+  <p>{{ manual:glossary }}</p>
+
+  <!-- Footer -->
+  <div style="margin-top: 50px; text-align: right; font-size: 12pt;">
+    <p>日期：<span id="print-date"></span></p>
+  </div>
+  <script>
+    const now = new Date();
+    document.getElementById('print-date').innerText = now.getFullYear() + '年' + (now.getMonth() + 1) + '月' + now.getDate() + '日';
+  </script>
 </div>

@@ -5,7 +5,9 @@ interface User {
   id: number;
   username: string;
   role: string;
-  unit_id?: number;
+  roles?: string[];
+  unit_id?: string | number;
+  department_id?: string | number;
 }
 
 interface AuthContextType {

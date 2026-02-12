@@ -22,9 +22,13 @@ const errorHandler = (err, req, res, next) => {
   }
 
   console.error(err);
+
+  // For debugging: return actual error message
+  // In production this should be sanitized
   return res.status(500).json({
     code: 'INTERNAL_SERVER_ERROR',
-    message: 'Unexpected error occurred'
+    message: err.message || 'Unexpected error occurred',
+    detail: err.detail // Postgres specific
   });
 };
 

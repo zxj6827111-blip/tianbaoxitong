@@ -49,7 +49,7 @@ router.get('/:id/download/excel', requireAuth, async (req, res, next) => {
         message: 'Report version not found'
       });
     }
-    return await sendFileOr404(res, reportVersion.excel_path, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'report.xlsx');
+    return await sendFileOr404(res, reportVersion.excel_path, 'application/vnd.ms-excel', 'report.xls');
   } catch (error) {
     return next(error);
   }

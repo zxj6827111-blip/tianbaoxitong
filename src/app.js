@@ -23,6 +23,29 @@ app.use(cors({
 
 app.use(express.json());
 
+// Global Request Logger (default: concise, one line per non-health request)
+app.use((req, res, next) => {
+  if (process.env.REQUEST_LOG === 'off') {
+    return next();
+  }
+
+  if (req.path === '/api/health' || req.method === 'OPTIONS') {
+    return next();
+  }
+
+  const start = Date.now();
+  res.on('finish', () => {
+    const durationMs = Date.now() - start;
+    const line = `[HTTP] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
+    if (res.statusCode >= 400) {
+      console.warn(line);
+    } else {
+      console.log(line);
+    }
+  });
+  next();
+});
+
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });

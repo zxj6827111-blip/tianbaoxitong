@@ -11,14 +11,19 @@ const upload = multer({ storage: multer.memoryStorage() });
 // Create Department
 router.post('/departments', requireAuth, requireRole(['admin']), async (req, res, next) => {
   try {
-    const { code, name, parent_id, sort_order } = req.body;
-    
-    if (!code || !name) {
+    let { code, name, parent_id, sort_order } = req.body;
+
+    if (!name) {
       throw new AppError({
         statusCode: 400,
         code: 'VALIDATION_ERROR',
-        message: 'Code and name are required'
+        message: 'Name is required'
       });
+    }
+
+    // Auto-generate code if not provided
+    if (!code) {
+      code = `DEPT_${Date.now()}`;
     }
 
     const result = await db.query(
@@ -38,7 +43,7 @@ router.post('/departments', requireAuth, requireRole(['admin']), async (req, res
 router.put('/departments/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
   try {
     const { code, name, parent_id, sort_order } = req.body;
-    
+
     const result = await db.query(
       `UPDATE org_department
        SET code = COALESCE($1, code),
@@ -104,14 +109,19 @@ router.delete('/departments/:id', requireAuth, requireRole(['admin']), async (re
 // Create Unit
 router.post('/units', requireAuth, requireRole(['admin']), async (req, res, next) => {
   try {
-    const { code, name, department_id, sort_order } = req.body;
-    
-    if (!code || !name || !department_id) {
+    let { code, name, department_id, sort_order } = req.body;
+
+    if (!name || !department_id) {
       throw new AppError({
         statusCode: 400,
         code: 'VALIDATION_ERROR',
-        message: 'Code, name, and department_id are required'
+        message: 'Name and department_id are required'
       });
+    }
+
+    // Auto-generate code if not provided
+    if (!code) {
+      code = `UNIT_${Date.now()}`;
     }
 
     const result = await db.query(
@@ -131,7 +141,7 @@ router.post('/units', requireAuth, requireRole(['admin']), async (req, res, next
 router.put('/units/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
   try {
     const { code, name, department_id, sort_order } = req.body;
-    
+
     const result = await db.query(
       `UPDATE org_unit
        SET code = COALESCE($1, code),
@@ -160,13 +170,30 @@ router.put('/units/:id', requireAuth, requireRole(['admin']), async (req, res, n
 
 // Delete Unit
 router.delete('/units/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
+  const client = await db.pool.connect();
   try {
-    const result = await db.query(
+    await client.query('BEGIN');
+
+    const unitId = req.params.id;
+    console.log(`[DELETE] Attempting to delete unit: ${unitId}`);
+
+    // 1. Delete dependent data
+    // Note: Some tables have ON DELETE RESTRICT, so we must delete children first
+    const delJobs = await client.query('DELETE FROM upload_job WHERE unit_id = $1 RETURNING id', [unitId]);
+    console.log(`[DELETE] Deleted ${delJobs.rowCount} upload_jobs`);
+    await client.query('DELETE FROM history_actuals WHERE unit_id = $1', [unitId]);
+    await client.query('DELETE FROM correction_suggestion WHERE unit_id = $1', [unitId]);
+    await client.query('DELETE FROM report_draft WHERE unit_id = $1', [unitId]);
+    // users table sets unit_id to NULL on delete, so no need to delete users
+
+    // 2. Delete the unit itself
+    const result = await client.query(
       'DELETE FROM org_unit WHERE id = $1 RETURNING *',
-      [req.params.id]
+      [unitId]
     );
 
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       throw new AppError({
         statusCode: 404,
         code: 'NOT_FOUND',
@@ -174,18 +201,23 @@ router.delete('/units/:id', requireAuth, requireRole(['admin']), async (req, res
       });
     }
 
-    return res.json({ success: true });
+    await client.query('COMMIT');
+    return res.json({ success: true, unit: result.rows[0] });
   } catch (error) {
+    await client.query('ROLLBACK');
     return next(error);
+  } finally {
+    client.release();
   }
 });
+
 
 // Reorder Items (Departments or Units)
 router.post('/reorder', requireAuth, requireRole(['admin']), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const { type, items } = req.body; // type: 'department' | 'unit', items: [{id, sort_order}]
-    
+
     if (!type || !items || !Array.isArray(items)) {
       throw new AppError({
         statusCode: 400,
@@ -195,7 +227,7 @@ router.post('/reorder', requireAuth, requireRole(['admin']), async (req, res, ne
     }
 
     const table = type === 'department' ? 'org_department' : 'org_unit';
-    
+
     await client.query('BEGIN');
 
     for (const item of items) {
@@ -230,7 +262,7 @@ router.post('/batch-import', requireAuth, requireRole(['admin']), upload.single(
 
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.load(req.file.buffer);
-    
+
     const worksheet = workbook.getWorksheet(1);
     if (!worksheet) {
       throw new AppError({
@@ -274,7 +306,7 @@ router.post('/batch-import', requireAuth, requireRole(['admin']), upload.single(
     const deptCodeMap = new Map();
     for (const dept of departments) {
       const parentId = dept.parentCode ? deptCodeMap.get(dept.parentCode) : null;
-      
+
       const result = await client.query(
         `INSERT INTO org_department (code, name, parent_id, sort_order)
          VALUES ($1, $2, $3, $4)
@@ -283,14 +315,14 @@ router.post('/batch-import', requireAuth, requireRole(['admin']), upload.single(
          RETURNING id`,
         [dept.code, dept.name, parentId, dept.sortOrder]
       );
-      
+
       deptCodeMap.set(dept.code, result.rows[0].id);
     }
 
     // Insert/Update Units
     for (const unit of units) {
       const deptId = deptCodeMap.get(unit.parentCode);
-      
+
       if (!deptId) {
         errors.push({ row: unit.rowNumber, message: `Department not found: ${unit.parentCode}` });
         continue;

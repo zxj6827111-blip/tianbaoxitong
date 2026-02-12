@@ -164,6 +164,42 @@ const upsertHistoryActualFromSuggestion = async ({
   );
 };
 
+const listUnitHistoryYears = async ({ unitId, stage = 'FINAL' }) => {
+  const result = await db.query(
+    `
+      SELECT year,
+             COUNT(*) AS field_count,
+             BOOL_OR(is_locked) AS is_locked
+      FROM history_actuals
+      WHERE unit_id = $1
+        AND stage = $2
+      GROUP BY year
+      ORDER BY year DESC
+    `,
+    [unitId, stage]
+  );
+
+  return result.rows.map((row) => ({
+    year: Number(row.year),
+    field_count: Number(row.field_count),
+    is_locked: Boolean(row.is_locked)
+  }));
+};
+
+const getUnitHistoryByYear = async ({ unitId, year, stage = 'FINAL' }) => {
+  const result = await db.query(
+    `
+      SELECT key, value_numeric
+      FROM history_actuals
+      WHERE unit_id = $1
+        AND year = $2
+        AND stage = $3
+    `,
+    [unitId, year, stage]
+  );
+  return result.rows;
+};
+
 module.exports = {
   fetchUnitMapByCodes,
   findLockedUnitYears,
@@ -172,5 +208,7 @@ module.exports = {
   insertHistoryActuals,
   lockHistoryBatch,
   lookupHistoryActuals,
-  upsertHistoryActualFromSuggestion
+  upsertHistoryActualFromSuggestion,
+  listUnitHistoryYears,
+  getUnitHistoryByYear
 };

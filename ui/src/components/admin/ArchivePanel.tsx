@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Upload, FileText, Calendar, User, Download } from 'lucide-react';
+import { DataParseModal } from './DataParseModal';
 
 interface ArchivePanelProps {
   departmentId: string;
@@ -16,6 +17,7 @@ interface Report {
 
 interface TextContent {
   id: string;
+  report_type: 'BUDGET' | 'FINAL';
   category: string;
   content_text: string;
   updated_at: string;
@@ -28,17 +30,21 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
   const [uploading, setUploading] = useState(false);
   const [selectedType, setSelectedType] = useState<'BUDGET' | 'FINAL'>('BUDGET');
 
+  // New States for Extraction
+  const [parseModalOpen, setParseModalOpen] = useState(false);
+  const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+
   useEffect(() => {
     loadArchives();
-  }, [departmentId, year]);
+  }, [departmentId, year, selectedType]);
 
   const loadArchives = async () => {
     try {
       const response = await fetch(
-        `/api/admin/archives/departments/${departmentId}/years/${year}`,
+        `/api/admin/archives/departments/${departmentId}/years/${year}?report_type=${selectedType}`,
         {
           headers: {
-            'Authorization': `Bearer ${localStorage.getItem('token')}`
+            'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
           }
         }
       );
@@ -68,7 +74,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
       const response = await fetch('/api/admin/archives/upload', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: formData
       });
@@ -92,11 +98,12 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
         },
         body: JSON.stringify({
           department_id: departmentId,
           year,
+          report_type: selectedType,
           category,
           content_text: content
         })
@@ -104,6 +111,30 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
       await loadArchives();
     } catch (error) {
       console.error('Save error:', error);
+      alert('保存失败');
+    }
+  };
+
+  const handleParseSave = async (items: any[]) => {
+    try {
+      if (!selectedReportId) return;
+
+      const response = await fetch('/api/admin/archives/save-budget-facts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({
+          report_id: selectedReportId,
+          items
+        })
+      });
+
+      if (!response.ok) throw new Error('Save failed');
+      alert('数据入库成功！');
+    } catch (error) {
+      console.error('Save failed:', error);
       alert('保存失败');
     }
   };
@@ -120,25 +151,23 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
           <Upload className="w-4 h-4" />
           上传年度报告 PDF
         </h3>
-        
+
         <div className="flex gap-2 mb-3">
           <button
             onClick={() => setSelectedType('BUDGET')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              selectedType === 'BUDGET'
-                ? 'bg-brand-600 text-white'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${selectedType === 'BUDGET'
+              ? 'bg-brand-600 text-white'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
           >
             预算报告
           </button>
           <button
             onClick={() => setSelectedType('FINAL')}
-            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${
-              selectedType === 'FINAL'
-                ? 'bg-brand-600 text-white'
-                : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
+            className={`px-3 py-1.5 text-xs font-medium rounded-lg transition-colors ${selectedType === 'FINAL'
+              ? 'bg-brand-600 text-white'
+              : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
           >
             决算报告
           </button>
@@ -180,7 +209,19 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
                     </div>
                   </div>
                 </div>
-                <span className="text-xs text-slate-400">{new Date(report.created_at).toLocaleDateString()}</span>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="text-xs bg-white text-slate-600 border px-2 py-1 rounded hover:bg-slate-50 flex items-center gap-1"
+                    onClick={() => {
+                      setSelectedReportId(report.id);
+                      setParseModalOpen(true);
+                    }}
+                  >
+                    <Download className="w-3 h-3" />
+                    提取数据
+                  </button>
+                  <span className="text-xs text-slate-400">{new Date(report.created_at).toLocaleDateString()}</span>
+                </div>
               </div>
             ))}
           </div>
@@ -193,21 +234,23 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
         <p className="text-xs text-slate-500 mb-3">
           这些内容可以在工作台的手动填报步骤中快速复用
         </p>
-        
-        {['FUNCTION', 'STRUCTURE', 'TERMINOLOGY'].map((category) => {
-          const existing = textContent.find((tc) => tc.category === category);
+
+        {['RAW', 'FUNCTION', 'STRUCTURE', 'TERMINOLOGY'].map((category) => {
+          const existing = textContent.find((tc) => tc.category === category && tc.report_type === selectedType);
           return (
             <div key={category} className="mb-4">
               <label className="block text-xs font-medium text-slate-700 mb-1">
+                {category === 'RAW' && '全文识别内容 (AI提取数据源)'}
                 {category === 'FUNCTION' && '主要职能'}
                 {category === 'STRUCTURE' && '机构设置'}
                 {category === 'TERMINOLOGY' && '名词解释'}
               </label>
               <textarea
+                key={`${selectedType}-${category}-${existing?.id || 'new'}`}
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500"
                 rows={3}
                 defaultValue={existing?.content_text || ''}
-                placeholder={`输入${category === 'FUNCTION' ? '主要职能' : category === 'STRUCTURE' ? '机构设置' : '名词解释'}内容...`}
+                placeholder={`输入${category === 'RAW' ? '全文内容' : category === 'FUNCTION' ? '主要职能' : category === 'STRUCTURE' ? '机构设置' : '名词解释'}内容...`}
                 onBlur={(e) => {
                   if (e.target.value.trim()) {
                     saveTextContent(category, e.target.value.trim());
@@ -218,6 +261,16 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({ departmentId, year }) => {
           );
         })}
       </div>
+
+      {/* Modal */}
+      {selectedReportId && (
+        <DataParseModal
+          isOpen={parseModalOpen}
+          onClose={() => setParseModalOpen(false)}
+          reportId={selectedReportId}
+          onSave={handleParseSave}
+        />
+      )}
     </div>
   );
 };

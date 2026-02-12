@@ -10,15 +10,22 @@ interface ValidationIssue {
     sheet_name?: string;
     cell_address?: string;
     anchor?: string;
+    item_key?: string;
+    missing_keys?: Array<{ key: string }>;
+    [key: string]: any;
   };
 }
 
 interface ValidationPanelProps {
-  draftId: number;
+  draftId: string;
+  ifMatchUpdatedAt?: string | null;
   onValidate?: () => void;
+  onValidated?: (result: any) => void;
+  onIssuesChange?: (issues: ValidationIssue[]) => void;
+  onIssueClick?: (issue: ValidationIssue) => void;
 }
 
-export const ValidationPanel: React.FC<ValidationPanelProps> = ({ draftId, onValidate }) => {
+export const ValidationPanel: React.FC<ValidationPanelProps> = ({ draftId, ifMatchUpdatedAt, onValidate, onValidated, onIssuesChange, onIssueClick }) => {
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
   const [isValidating, setIsValidating] = useState(false);
   const [filter, setFilter] = useState<'all' | 'FATAL' | 'WARNING' | 'SUGGEST'>('all');
@@ -26,7 +33,9 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ draftId, onVal
   const loadIssues = async (level?: string) => {
     try {
       const response = await apiClient.getIssues(draftId, level);
-      setIssues(response.issues || []);
+      const nextIssues = response.issues || [];
+      setIssues(nextIssues);
+      onIssuesChange?.(nextIssues);
     } catch (error) {
       console.error('Failed to load issues:', error);
     }
@@ -39,12 +48,17 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ draftId, onVal
   const handleValidate = async () => {
     try {
       setIsValidating(true);
-      const response = await apiClient.validateDraft(draftId);
-      setIssues(response.issues || []);
+      const response = await apiClient.validateDraft(draftId, {
+        if_match_updated_at: ifMatchUpdatedAt || undefined
+      });
+      const nextIssues = response.issues || [];
+      setIssues(nextIssues);
+      onIssuesChange?.(nextIssues);
+      onValidated?.(response);
       onValidate?.();
     } catch (error) {
       console.error('Validation failed:', error);
-      alert('校验失败,请重试');
+      alert('校验失败，可能是草稿已被更新，请刷新后重试');
     } finally {
       setIsValidating(false);
     }
@@ -129,7 +143,8 @@ export const ValidationPanel: React.FC<ValidationPanelProps> = ({ draftId, onVal
           filteredIssues.map((issue) => (
             <div
               key={issue.id}
-              className={`p-4 border rounded-lg ${getLevelBadge(issue.level)}`}
+              className={`p-4 border rounded-lg ${getLevelBadge(issue.level)} ${onIssueClick ? 'cursor-pointer hover:shadow-sm' : ''}`}
+              onClick={() => onIssueClick?.(issue)}
             >
               <div className="flex items-start gap-3">
                 <span className="text-xl">{getLevelIcon(issue.level)}</span>

@@ -7,6 +7,7 @@ const db = require('../db');
 const { AppError } = require('../errors');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { parseBudgetWorkbook } = require('../services/excelParser');
+const { BUDGET_MAPPING, BUDGET_MAPPING_DEPARTMENT } = require('../services/budgetMapping');
 const { ensureUploadDir, getUploadFilePath } = require('../services/uploadStorage');
 
 const router = express.Router();
@@ -23,54 +24,89 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
     }
 
     const ext = path.extname(req.file.originalname || '').toLowerCase();
-    if (ext !== '.xlsx') {
+    if (!['.xlsx', '.xls'].includes(ext)) {
       return next(new AppError({
         statusCode: 400,
         code: 'INVALID_FILE_TYPE',
-        message: 'Only .xlsx files are supported'
+        message: 'Only .xls/.xlsx files are supported'
       }));
     }
 
-    const unitId = req.user.unit_id;
+    // Admin users can specify unit_id in request body, regular users use their assigned unit
+    const isAdmin = req.user.roles && req.user.roles.includes('admin');
+    const unitId = isAdmin && req.body.unit_id ? req.body.unit_id : req.user.unit_id;
     const year = Number(req.body.year);
     const caliber = req.body.caliber || 'unit';
 
-    if (!unitId || !Number.isInteger(year)) {
+    if (!unitId) {
       return next(new AppError({
         statusCode: 400,
         code: 'VALIDATION_ERROR',
-        message: 'unit_id and year are required'
+        message: isAdmin ? 'unit_id is required (please select a unit)' : 'User has no assigned unit'
+      }));
+    }
+
+    if (!Number.isInteger(year)) {
+      return next(new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'year is required'
       }));
     }
 
     const fileHash = crypto.createHash('sha256').update(req.file.buffer).digest('hex');
 
-    const insertResult = await db.query(
-      `INSERT INTO upload_job (unit_id, year, caliber, file_name, file_hash, status, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING id, file_hash, status`,
-      [unitId, year, caliber, req.file.originalname, fileHash, 'UPLOADED', req.user.id]
-    );
+    // Check for existing upload and delete it (Overwrite strategy)
+    // This allows users to re-upload if parsing failed or they want to start over
+    const client = await db.pool.connect();
+    try {
+      await client.query('BEGIN');
 
-    const uploadId = insertResult.rows[0].id;
+      // Find existing upload
+      const existing = await client.query(
+        'SELECT id FROM upload_job WHERE unit_id = $1 AND year = $2',
+        [unitId, year]
+      );
 
-    await ensureUploadDir();
-    const filePath = getUploadFilePath(uploadId, req.file.originalname);
-    await fs.writeFile(filePath, req.file.buffer);
+      if (existing.rowCount > 0) {
+        const oldId = existing.rows[0].id;
+        // Delete related drafts first (if any)
+        await client.query('DELETE FROM report_draft WHERE upload_id = $1', [oldId]);
+        // Delete parsed data
+        await client.query('DELETE FROM parsed_cells WHERE upload_id = $1', [oldId]);
+        await client.query('DELETE FROM facts_budget WHERE upload_id = $1', [oldId]);
+        // Delete the upload job itself
+        await client.query('DELETE FROM upload_job WHERE id = $1', [oldId]);
+      }
 
-    return res.status(201).json({
-      upload_id: uploadId,
-      file_hash: insertResult.rows[0].file_hash,
-      status: insertResult.rows[0].status
-    });
-  } catch (error) {
-    if (error.code === '23505') {
-      return next(new AppError({
-        statusCode: 409,
-        code: 'UPLOAD_CONFLICT',
-        message: 'Upload already exists for this unit and year'
-      }));
+      const insertResult = await client.query(
+        `INSERT INTO upload_job (unit_id, year, caliber, file_name, file_hash, status, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, file_hash, status`,
+        [unitId, year, caliber, req.file.originalname, fileHash, 'UPLOADED', req.user.id]
+      );
+
+      await client.query('COMMIT');
+
+      const uploadId = insertResult.rows[0].id;
+
+      await ensureUploadDir();
+      const filePath = getUploadFilePath(uploadId, req.file.originalname);
+      await fs.writeFile(filePath, req.file.buffer);
+
+      return res.status(201).json({
+        upload_id: uploadId,
+        file_hash: insertResult.rows[0].file_hash,
+        status: insertResult.rows[0].status
+      });
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
+  } catch (error) {
     return next(error);
   }
 });
@@ -83,7 +119,7 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     await client.query('BEGIN');
 
     const uploadResult = await client.query(
-      `SELECT id, unit_id, year, file_name
+      `SELECT id, unit_id, year, file_name, caliber
        FROM upload_job
        WHERE id = $1`,
       [uploadId]
@@ -117,7 +153,10 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     }
 
     const filePath = getUploadFilePath(uploadId, uploadJob.file_name);
-    const parseResult = await parseBudgetWorkbook(filePath);
+    const mapping = uploadJob.caliber === 'department'
+      ? BUDGET_MAPPING_DEPARTMENT
+      : BUDGET_MAPPING;
+    const parseResult = await parseBudgetWorkbook(filePath, mapping);
 
     await client.query('DELETE FROM parsed_cells WHERE upload_id = $1', [uploadId]);
     await client.query('DELETE FROM facts_budget WHERE upload_id = $1', [uploadId]);
@@ -190,6 +229,72 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
       ]
     );
 
+    const draftId = draftResult.rows[0].id;
+
+    // === Save Extracted Texts to Manual Inputs ===
+    if (parseResult.texts && parseResult.texts.length > 0) {
+      for (const textItem of parseResult.texts) {
+        // Upsert manual inputs
+        await client.query(
+          `INSERT INTO manual_inputs (draft_id, key, value_text, updated_by)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (draft_id, key) 
+           DO UPDATE SET value_text = EXCLUDED.value_text, updated_at = now()`,
+          [draftId, textItem.key, textItem.value_text, req.user.id]
+        );
+      }
+    }
+
+    // === Reuse previous-year PDF text content when current year is empty ===
+    const historyTextKeys = {
+      main_functions: 'FUNCTION',
+      organizational_structure: 'STRUCTURE',
+      glossary: 'TERMINOLOGY'
+    };
+
+    const unitResult = await client.query(
+      `SELECT department_id
+       FROM org_unit
+       WHERE id = $1`,
+      [uploadJob.unit_id]
+    );
+
+    const departmentId = unitResult.rows[0]?.department_id || null;
+    const prevYear = uploadJob.year - 1;
+
+    if (departmentId && Number.isInteger(prevYear) && prevYear > 0) {
+      for (const [key, category] of Object.entries(historyTextKeys)) {
+        const historyResult = await client.query(
+          `SELECT content_text
+           FROM org_dept_text_content
+           WHERE department_id = $1 AND year = $2 AND report_type = 'BUDGET' AND category = $3`,
+          [departmentId, prevYear, category]
+        );
+        const historyText = historyResult.rows[0]?.content_text;
+        if (!historyText) continue;
+
+        await client.query(
+          `INSERT INTO manual_inputs (draft_id, key, value_text, evidence, updated_by)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (draft_id, key)
+           DO UPDATE SET
+             value_text = EXCLUDED.value_text,
+             evidence = EXCLUDED.evidence,
+             updated_by = EXCLUDED.updated_by,
+             updated_at = now()
+           WHERE manual_inputs.value_text IS NULL
+              OR manual_inputs.value_text = ''`,
+          [
+            draftId,
+            key,
+            historyText,
+            JSON.stringify({ source: 'archive_pdf', year: prevYear, category }),
+            req.user.id
+          ]
+        );
+      }
+    }
+
     await client.query(
       `UPDATE upload_job
        SET status = $1, updated_at = now()
@@ -200,9 +305,10 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     await client.query('COMMIT');
 
     return res.json({
-      draft_id: draftResult.rows[0].id,
+      draft_id: draftId,
       upload_id: uploadId,
       extracted_keys_count: parseResult.facts.length,
+      extracted_texts_count: parseResult.texts ? parseResult.texts.length : 0,
       status: draftResult.rows[0].status
     });
   } catch (error) {

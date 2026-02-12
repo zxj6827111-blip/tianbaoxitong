@@ -1,27 +1,69 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { useDropzone } from 'react-dropzone';
 import { apiClient } from '../../utils/apiClient';
-import { Loading } from '../ui/Loading';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface FileUploadProps {
-  onUploadComplete: (draftId: number) => void;
+  onUploadComplete: (draftId: string) => void;
   onError: (error: string) => void;
 }
 
+interface Unit {
+  id: string;
+  name: string;
+  department_name?: string;
+}
+
 export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onError }) => {
+  const { user } = useAuth();
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [year, setYear] = useState(new Date().getFullYear());
   const [caliber, setCaliber] = useState<'unit' | 'department'>('unit');
+  const [units, setUnits] = useState<Unit[]>([]);
+  const [selectedUnitId, setSelectedUnitId] = useState<string>('');
+  const [loadingUnits, setLoadingUnits] = useState(false);
+
+  // Check if user is admin (needs to select a unit)
+  const isAdmin = user?.role === 'admin' || user?.roles?.includes('admin');
+  const userHasNoUnit = !user?.unit_id;
+
+  // Load units for admin users or users without assigned unit
+  useEffect(() => {
+    if (isAdmin || userHasNoUnit) {
+      setLoadingUnits(true);
+      apiClient.getUnits({ pageSize: 1000 })
+        .then((response) => {
+          setUnits(response.units || []);
+          // Auto-select first unit if available
+          if (response.units?.length > 0 && !selectedUnitId) {
+            setSelectedUnitId(response.units[0].id);
+          }
+        })
+        .catch((err) => {
+          console.error('Failed to load units:', err);
+        })
+        .finally(() => {
+          setLoadingUnits(false);
+        });
+    }
+  }, [isAdmin, userHasNoUnit]);
 
   const onDrop = useCallback(
     async (acceptedFiles: File[]) => {
       if (acceptedFiles.length === 0) return;
 
       const file = acceptedFiles[0];
-      
-      if (!file.name.endsWith('.xlsx')) {
-        onError('只支持 .xlsx 格式的Excel文件');
+
+      const lowerName = file.name.toLowerCase();
+      if (!(lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls'))) {
+        onError('只支持 .xls/.xlsx 格式的Excel文件');
+        return;
+      }
+
+      // Validate unit selection for admin users
+      if ((isAdmin || userHasNoUnit) && !selectedUnitId) {
+        onError('请先选择一个单位');
         return;
       }
 
@@ -32,8 +74,9 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onErro
         // 模拟上传进度
         setUploadProgress(30);
 
-        // 上传文件
-        const uploadResponse = await apiClient.uploadFile(file, year, caliber);
+        // 上传文件 - pass unitId for admin users
+        const unitIdToUse = (isAdmin || userHasNoUnit) ? selectedUnitId : undefined;
+        const uploadResponse = await apiClient.uploadFile(file, year, caliber, unitIdToUse);
         setUploadProgress(60);
 
         // 解析文件
@@ -54,13 +97,14 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onErro
         setUploadProgress(0);
       }
     },
-    [year, caliber, onUploadComplete, onError]
+    [year, caliber, selectedUnitId, isAdmin, userHasNoUnit, onUploadComplete, onError]
   );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
     accept: {
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'application/vnd.ms-excel': ['.xls'],
     },
     multiple: false,
     disabled: isUploading,
@@ -95,6 +139,39 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onErro
         </div>
       </div>
 
+      {/* Unit selector for admin users or users without assigned unit */}
+      {(isAdmin || userHasNoUnit) && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-2">
+            选择单位 <span className="text-red-500">*</span>
+          </label>
+          {loadingUnits ? (
+            <div className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-500">
+              加载单位列表中...
+            </div>
+          ) : units.length === 0 ? (
+            <div className="w-full px-3 py-3 border border-amber-300 rounded-md bg-amber-50 text-amber-700 text-sm">
+              <p className="font-medium">暂无可用单位</p>
+              <p className="text-xs mt-1">请先在管理后台创建单位后再上传文件</p>
+            </div>
+          ) : (
+            <select
+              value={selectedUnitId}
+              onChange={(e) => setSelectedUnitId(e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={isUploading}
+            >
+              <option value="">-- 请选择单位 --</option>
+              {units.map((unit) => (
+                <option key={unit.id} value={unit.id}>
+                  {unit.name} {unit.department_name ? `(${unit.department_name})` : ''}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
+
       <div
         {...getRootProps()}
         className={`
@@ -123,7 +200,7 @@ export const FileUpload: React.FC<FileUploadProps> = ({ onUploadComplete, onErro
           ) : (
             <>
               <p className="text-gray-600">拖拽Excel文件到此处,或点击选择文件</p>
-              <p className="text-sm text-gray-500">仅支持 .xlsx 格式</p>
+              <p className="text-sm text-gray-500">仅支持 .xls/.xlsx 格式</p>
             </>
           )}
         </div>

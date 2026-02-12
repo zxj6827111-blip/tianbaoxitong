@@ -5,18 +5,63 @@ const { AppError } = require('../errors');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const db = require('../db');
 const { parseHistoryWorkbook } = require('../services/historyExcelParser');
-const { HISTORY_ACTUAL_KEYS } = require('../services/historyActualsConfig');
+const { HISTORY_ACTUAL_KEYS, HISTORY_ACTUAL_FIELD_DEFS } = require('../services/historyActualsConfig');
 const {
   fetchUnitMapByCodes,
   findLockedUnitYears,
   createHistoryBatch,
   updateHistoryBatch,
   insertHistoryActuals,
-  lockHistoryBatch
+  lockHistoryBatch,
+  listUnitHistoryYears,
+  getUnitHistoryByYear
 } = require('../repositories/historyRepository');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
+
+router.get('/units/:unitId/years', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  try {
+    const years = await listUnitHistoryYears({ unitId: req.params.unitId });
+    return res.json({
+      unit_id: req.params.unitId,
+      years
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/units/:unitId/years/:year', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  try {
+    const year = Number(req.params.year);
+    if (!Number.isInteger(year) || year < 1900) {
+      throw new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'year must be a valid integer'
+      });
+    }
+
+    const rows = await getUnitHistoryByYear({ unitId: req.params.unitId, year });
+    const valueMap = new Map(rows.map((row) => [row.key, Number(row.value_numeric)]));
+
+    const fields = HISTORY_ACTUAL_FIELD_DEFS.map((def) => ({
+      key: def.key,
+      label: def.label,
+      group: def.group,
+      value: valueMap.has(def.key) ? valueMap.get(def.key) : null
+    }));
+
+    return res.json({
+      unit_id: req.params.unitId,
+      year,
+      fields
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
 
 router.post('/import', requireAuth, requireRole(['admin']), upload.single('file'), async (req, res, next) => {
   const client = await db.getClient();

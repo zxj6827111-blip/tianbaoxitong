@@ -191,4 +191,38 @@ describe('history actuals import and lookup', () => {
 
     expect(retryResponse.status).toBe(409);
   });
+
+  it('lists archive years and returns yearly field values for admin panel', async () => {
+    const { deptId, unitId } = await createDepartmentAndUnit({ unitCode: 'U204', departmentCode: 'D204' });
+    await seedUserWithRole({ roleName: 'admin', unitId, deptId });
+    const adminToken = await login('admin@example.com');
+
+    await db.query(
+      `INSERT INTO history_actuals (unit_id, year, stage, key, value_numeric, is_locked)
+       VALUES
+         ($1, 2023, 'FINAL', 'budget_revenue_total', 123.45, false),
+         ($1, 2024, 'FINAL', 'budget_revenue_total', 456.78, true),
+         ($1, 2024, 'FINAL', 'three_public_outbound', 11.11, true),
+         ($1, 2024, 'FINAL', 'three_public_reception', 22.22, true)`,
+      [unitId]
+    );
+
+    const yearsResponse = await request(app)
+      .get(`/api/admin/history/units/${unitId}/years`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(yearsResponse.status).toBe(200);
+    expect(yearsResponse.body.years.map((item) => item.year)).toEqual([2024, 2023]);
+
+    const valuesResponse = await request(app)
+      .get(`/api/admin/history/units/${unitId}/years/2024`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(valuesResponse.status).toBe(200);
+    const fieldMap = new Map(valuesResponse.body.fields.map((item) => [item.key, item.value]));
+    expect(fieldMap.get('budget_revenue_total')).toBe(456.78);
+    expect(fieldMap.get('three_public_outbound')).toBe(11.11);
+    expect(fieldMap.get('three_public_reception')).toBe(22.22);
+    expect(fieldMap.has('three_public_vehicle_total')).toBe(true);
+  });
 });

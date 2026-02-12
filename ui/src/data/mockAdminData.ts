@@ -8,6 +8,7 @@ export type DepartmentNode = {
   missing_archive: number;
   pending_suggestions: number;
   missing_baseinfo: number;
+  sort_order?: number;
 };
 
 export type UnitRow = {
@@ -20,6 +21,7 @@ export type UnitRow = {
   baseinfo_ok: boolean;
   updated_at: string;
   draft_status?: string | null;
+  sort_order?: number;
 };
 
 export type UnitDetail = UnitRow & {
