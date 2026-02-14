@@ -7,6 +7,8 @@ const { PDFParse } = require('pdf-parse');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { AppError } = require('../errors');
 const db = require('../db');
+const { resolveHistoryActualKey } = require('../services/historyFactMatcher');
+const { extractHistoryFactsFromTableData } = require('../services/historyFactAutoExtractor');
 
 const router = express.Router();
 
@@ -64,6 +66,18 @@ const extractSectionsFromText = (text) => {
   });
 
   return result;
+};
+
+const sanitizeReusableText = (content) => {
+  if (!content) return '';
+  const lines = String(content)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^目录$/.test(line))
+    .filter((line) => !/^[一二三四五六七八九十0-9]+[、.．].*[\.。．·…]{6,}\s*$/.test(line))
+    .filter((line) => !/^[\.。．·…\-\s]+$/.test(line));
+  return lines.join('\n').trim();
 };
 
 /**
@@ -252,6 +266,95 @@ const parseNumeric = (value) => {
   if (!cleaned || cleaned === '-') return null;
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const NUMERIC_COMPARE_TOLERANCE = 0.01;
+const valuesNearlyEqual = (left, right, tolerance = NUMERIC_COMPARE_TOLERANCE) => {
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  return Math.abs(left - right) <= tolerance;
+};
+
+const isLikelyUnitScaleMismatch = (autoValue, manualValue) => {
+  if (!Number.isFinite(autoValue) || !Number.isFinite(manualValue) || autoValue === 0) return false;
+  const ratio = Math.abs(manualValue / autoValue);
+  return Math.abs(ratio - 10000) <= 1 || Math.abs(ratio - 0.0001) <= 0.000001;
+};
+
+const roundToFactPrecision = (value) => {
+  if (!Number.isFinite(value)) return value;
+  return Number(Number(value).toFixed(2));
+};
+
+const MANUAL_VALUE_AMBIGUOUS_YUAN_THRESHOLD = 10000000;
+const MANUAL_SCALE_ANCHOR_MAP = {
+  budget_revenue_fiscal: 'fiscal_grant_revenue_total',
+  fiscal_grant_revenue_total: 'budget_revenue_fiscal',
+  budget_expenditure_total: 'fiscal_grant_expenditure_total',
+  fiscal_grant_expenditure_total: 'budget_expenditure_total'
+};
+const SMALL_AMOUNT_FACT_KEYS = new Set([
+  'three_public_total',
+  'three_public_outbound',
+  'three_public_vehicle_total',
+  'three_public_vehicle_purchase',
+  'three_public_vehicle_operation',
+  'three_public_reception',
+  'operation_fund'
+]);
+
+const inferManualScaleToWanyuan = (rawLabel, numeric) => {
+  const text = String(rawLabel || '').replace(/\s+/g, '');
+  if (!text) {
+    return Math.abs(numeric) >= MANUAL_VALUE_AMBIGUOUS_YUAN_THRESHOLD ? 1 / 10000 : 1;
+  }
+
+  if (text.includes('万元')) return 1;
+  if (text.includes('千元')) return 0.1;
+  if (text.includes('单位：元') || text.includes('单位:元')) return 1 / 10000;
+  if (text.includes('元') && !text.includes('美元')) return 1 / 10000;
+  if (Math.abs(numeric) >= MANUAL_VALUE_AMBIGUOUS_YUAN_THRESHOLD) return 1 / 10000;
+  return 1;
+};
+
+const normalizeManualFactValue = ({ rawLabel, matchedKey, numeric, mappedEntries }) => {
+  const anchorKey = MANUAL_SCALE_ANCHOR_MAP[matchedKey];
+  if (anchorKey) {
+    const anchor = Number(mappedEntries.get(anchorKey));
+    if (Number.isFinite(anchor) && anchor !== 0 && isLikelyUnitScaleMismatch(anchor, numeric)) {
+      const ratio = Math.abs(numeric / anchor);
+      const normalized = ratio >= 1 ? numeric / 10000 : numeric * 10000;
+      return {
+        value: roundToFactPrecision(normalized),
+        normalized: true,
+        reason: 'ANCHOR_SCALE_NORMALIZED'
+      };
+    }
+  }
+
+  const scale = inferManualScaleToWanyuan(rawLabel, numeric);
+  if (scale !== 1) {
+    return {
+      value: roundToFactPrecision(numeric * scale),
+      normalized: true,
+      reason: 'LABEL_OR_MAGNITUDE_SCALE_NORMALIZED'
+    };
+  }
+
+  // Guardrail: three-public and operation-fund values are in "万元" and are usually small.
+  // If manual parse yields huge numbers (often "元"), normalize to "万元".
+  if (SMALL_AMOUNT_FACT_KEYS.has(matchedKey) && Math.abs(numeric) >= 1000) {
+    return {
+      value: roundToFactPrecision(numeric / 10000),
+      normalized: true,
+      reason: 'SMALL_AMOUNT_KEY_SCALE_NORMALIZED'
+    };
+  }
+
+  return {
+    value: roundToFactPrecision(numeric),
+    normalized: false,
+    reason: null
+  };
 };
 
 const extractLineItemsFromTables = (tables) => {
@@ -470,6 +573,8 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
 
       const upsertTextContent = async (category, content) => {
         if (!content) return;
+        const finalContent = category === 'RAW' ? content : sanitizeReusableText(content);
+        if (!finalContent) return;
         await client.query(
           `INSERT INTO org_dept_text_content 
            (department_id, year, report_type, category, content_text, source_report_id, created_by)
@@ -481,7 +586,7 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
              updated_at = NOW()
            WHERE org_dept_text_content.content_text IS NULL
               OR org_dept_text_content.content_text = ''`,
-          [department_id, parseInt(year), report_type, category, content, report.id, req.user.id]
+          [department_id, parseInt(year), report_type, category, finalContent, report.id, req.user.id]
         );
       };
 
@@ -600,6 +705,116 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
 });
 
 // Get Archives for Department/Year
+router.get('/departments/:deptId/years', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  try {
+    const { deptId } = req.params;
+    const yearsResult = await db.query(
+      `SELECT DISTINCT year
+       FROM org_dept_annual_report
+       WHERE department_id = $1
+       ORDER BY year DESC`,
+      [deptId]
+    );
+
+    return res.json({
+      years: yearsResult.rows.map((row) => Number(row.year)).filter((value) => Number.isInteger(value))
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.delete('/departments/:deptId/years/:year', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  const client = await db.getClient();
+  try {
+    const { deptId, year } = req.params;
+    const unitId = req.query.unit_id ? String(req.query.unit_id) : null;
+    const parsedYear = Number(year);
+    if (!Number.isInteger(parsedYear) || parsedYear < 1900 || parsedYear > 2100) {
+      throw new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'year must be a valid integer'
+      });
+    }
+
+    await client.query('BEGIN');
+
+    const reportRows = await client.query(
+      `SELECT id, file_path
+       FROM org_dept_annual_report
+       WHERE department_id = $1 AND year = $2`,
+      [deptId, parsedYear]
+    );
+    const filePaths = reportRows.rows.map((row) => row.file_path).filter(Boolean);
+
+    const textDeleteResult = await client.query(
+      `DELETE FROM org_dept_text_content
+       WHERE department_id = $1 AND year = $2`,
+      [deptId, parsedYear]
+    );
+
+    const tableDeleteResult = await client.query(
+      `DELETE FROM org_dept_table_data
+       WHERE department_id = $1 AND year = $2`,
+      [deptId, parsedYear]
+    );
+
+    const lineDeleteResult = await client.query(
+      `DELETE FROM org_dept_line_items
+       WHERE department_id = $1 AND year = $2`,
+      [deptId, parsedYear]
+    );
+
+    const reportDeleteResult = await client.query(
+      `DELETE FROM org_dept_annual_report
+       WHERE department_id = $1 AND year = $2`,
+      [deptId, parsedYear]
+    );
+
+    let historyDeleteCount = 0;
+    if (unitId) {
+      const historyDeleteResult = await client.query(
+        `DELETE FROM history_actuals
+         WHERE unit_id = $1
+           AND year = $2
+           AND stage = 'FINAL'
+           AND provenance_source = 'archive_parse'`,
+        [unitId, parsedYear]
+      );
+      historyDeleteCount = historyDeleteResult.rowCount;
+    }
+
+    await client.query('COMMIT');
+
+    for (const filePath of filePaths) {
+      try {
+        await fs.unlink(filePath);
+      } catch (unlinkError) {
+        console.warn('Delete year: failed to remove file:', filePath, unlinkError?.message || unlinkError);
+      }
+    }
+
+    return res.json({
+      success: true,
+      department_id: deptId,
+      year: parsedYear,
+      deleted: {
+        reports: reportDeleteResult.rowCount,
+        text_content: textDeleteResult.rowCount,
+        table_data: tableDeleteResult.rowCount,
+        line_items: lineDeleteResult.rowCount,
+        history_actuals_archive_parse: historyDeleteCount
+      }
+    });
+  } catch (error) {
+    await client.query('ROLLBACK');
+    return next(error);
+  } finally {
+    client.release();
+  }
+});
+
 router.get('/departments/:deptId/years/:year', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const { deptId, year } = req.params;
@@ -859,34 +1074,60 @@ Example: [{"key": "Total Income", "value": 10000.00}]`;
 router.post('/save-budget-facts', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   const client = await db.getClient();
   try {
-    const { upload_id, report_id, items } = req.body;
-    // Note: older schema used upload_id, current 'org_dept_annual_report' is the 'report'.
-    // We should link facts to the report.
-    // However, existing 'facts_budget' table links to 'upload_job' (id).
-    // For now, let's look up the unit/year from report_id and insert. 
-    // IF the system uses 'org_dept_annual_report' which doesn't seemingly map to 'upload_job' table,
-    // we might need to adjust or create a link.
-    // Let's check 'facts_budget' schema again. It uses 'upload_id' FK to 'upload_job'.
-    // Our new file upload goes to 'org_dept_annual_report'.
-    // COMPATIBILITY FIX: We will create a fake "upload_job" record or just insert if we can find a workaround.
-    // Actually, 'org_dept_annual_report' has department_id. 'facts_budget' needs 'unit_id'.
-    // This implies 'facts_budget' was designed for Unit-level Excel uploads. 
-    // Department-level PDF uploads might need a different storage or mapping.
-    //
-    // CRITICAL: We are uploading Department PDF, but `facts_budget` is for Unit.
-    // If this is a Dept Level report, maybe we just save to `org_dept_text_content` as structured JSON?
-    // OR: we decide that this data belongs to the "Department Unit".
-    // Let's look up the "Unit" that corresponds to this Department.
+    const { report_id, unit_id, items } = req.body;
 
-    // 1. Find the report details
+    if (!report_id || !Array.isArray(items)) {
+      throw new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'report_id and items[] are required'
+      });
+    }
+
     const reportRes = await client.query('SELECT * FROM org_dept_annual_report WHERE id = $1', [report_id]);
-    if (reportRes.rows.length === 0) throw new Error('Report not found');
+    if (reportRes.rows.length === 0) {
+      throw new AppError({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+        message: 'Report not found'
+      });
+    }
     const report = reportRes.rows[0];
 
-    // 2. Insert items into a new table or existing one.
-    // Since `facts_budget` requires `upload_id` (from upload_job), we can't easily use it without a job.
-    // Alternative: Save as a special CATEGORY in org_dept_text_content for now, e.g. 'DATA_JSON'.
-    // This avoids schema changes and "upload_job" dependency.
+    let targetUnitId = unit_id || null;
+    if (targetUnitId) {
+      const unitCheck = await client.query(
+        `SELECT id
+         FROM org_unit
+         WHERE id = $1
+           AND department_id = $2`,
+        [targetUnitId, report.department_id]
+      );
+      if (unitCheck.rowCount === 0) {
+        throw new AppError({
+          statusCode: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'unit_id does not belong to report department'
+        });
+      }
+    } else {
+      const fallbackUnit = await client.query(
+        `SELECT id
+         FROM org_unit
+         WHERE department_id = $1
+         ORDER BY sort_order ASC, created_at ASC
+         LIMIT 1`,
+        [report.department_id]
+      );
+      if (fallbackUnit.rowCount === 0) {
+        throw new AppError({
+          statusCode: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'No unit found for report department'
+        });
+      }
+      targetUnitId = fallbackUnit.rows[0].id;
+    }
 
     await client.query('BEGIN');
 
@@ -902,8 +1143,122 @@ router.post('/save-budget-facts', requireAuth, requireRole(['admin', 'maintainer
       [report.department_id, report.year, report.report_type, JSON.stringify(items), report_id, req.user.id]
     );
 
+    const tableDataRes = await client.query(
+      `SELECT table_key, data_json
+       FROM org_dept_table_data
+       WHERE report_id = $1`,
+      [report_id]
+    );
+    const autoFacts = extractHistoryFactsFromTableData(tableDataRes.rows || []);
+
+    const mappedEntries = new Map(Object.entries(autoFacts));
+    const autoFactKeys = new Set(Object.keys(autoFacts));
+    const manualConflicts = [];
+    const manualScaled = [];
+    const unmatched = [];
+
+    for (const item of items) {
+      const rawLabel = String(item?.key || '').trim();
+      const numeric = Number(item?.value);
+      if (!rawLabel || !Number.isFinite(numeric)) {
+        continue;
+      }
+
+      const matchedKey = resolveHistoryActualKey(rawLabel);
+      if (!matchedKey) {
+        unmatched.push(rawLabel);
+        continue;
+      }
+
+      // Structured table extraction is the most reliable source.
+      // Manual parse values are only used to fill missing keys, not override auto facts.
+      if (autoFactKeys.has(matchedKey)) {
+        const autoValue = Number(mappedEntries.get(matchedKey));
+        if (!valuesNearlyEqual(autoValue, numeric)) {
+          manualConflicts.push({
+            key: matchedKey,
+            auto_value: autoValue,
+            manual_value: numeric,
+            reason: isLikelyUnitScaleMismatch(autoValue, numeric)
+              ? 'UNIT_SCALE_MISMATCH'
+              : 'AUTO_FACT_PROTECTED'
+          });
+        }
+        continue;
+      }
+
+      const normalizedManual = normalizeManualFactValue({
+        rawLabel,
+        matchedKey,
+        numeric,
+        mappedEntries
+      });
+
+      mappedEntries.set(matchedKey, normalizedManual.value);
+
+      if (normalizedManual.normalized && !valuesNearlyEqual(normalizedManual.value, numeric)) {
+        manualScaled.push({
+          key: matchedKey,
+          original_manual_value: numeric,
+          normalized_value: normalizedManual.value,
+          reason: normalizedManual.reason
+        });
+      }
+    }
+
+    let upsertedCount = 0;
+    const mappedKeys = Array.from(mappedEntries.keys());
+    let lockedKeys = new Set();
+
+    if (mappedKeys.length > 0) {
+      const lockedResult = await client.query(
+        `SELECT key
+         FROM history_actuals
+         WHERE unit_id = $1
+           AND year = $2
+           AND stage = 'FINAL'
+           AND is_locked = true
+           AND key = ANY($3)`,
+        [targetUnitId, report.year, mappedKeys]
+      );
+      lockedKeys = new Set(lockedResult.rows.map((row) => row.key));
+    }
+
+    for (const [factKey, factValue] of mappedEntries.entries()) {
+      if (lockedKeys.has(factKey)) continue;
+
+      const upsertResult = await client.query(
+        `INSERT INTO history_actuals
+           (unit_id, year, stage, key, value_numeric, source_batch_id, is_locked, provenance_source)
+         VALUES ($1, $2, 'FINAL', $3, $4, NULL, false, 'archive_parse')
+         ON CONFLICT (unit_id, year, stage, key)
+         DO UPDATE SET
+           value_numeric = EXCLUDED.value_numeric,
+           provenance_source = EXCLUDED.provenance_source,
+           updated_at = NOW()
+         WHERE history_actuals.is_locked = false
+         RETURNING key`,
+        [targetUnitId, report.year, factKey, factValue]
+      );
+      upsertedCount += upsertResult.rowCount;
+    }
+
     await client.query('COMMIT');
-    return res.json({ success: true });
+    return res.json({
+      success: true,
+      unit_id: targetUnitId,
+      year: Number(report.year),
+      auto_mapped_count: Object.keys(autoFacts).length,
+      mapped_count: mappedEntries.size,
+      upserted_count: upsertedCount,
+      locked_skipped: Array.from(lockedKeys),
+      manual_conflict_skipped_count: manualConflicts.length,
+      manual_conflicts: manualConflicts.slice(0, 20),
+      manual_scaled_count: manualScaled.length,
+      manual_scaled: manualScaled.slice(0, 20),
+      unmatched_count: unmatched.length,
+      unmatched_labels: unmatched.slice(0, 20)
+    });
 
   } catch (error) {
     await client.query('ROLLBACK');

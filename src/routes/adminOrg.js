@@ -9,7 +9,7 @@ const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Create Department
-router.post('/departments', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.post('/departments', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     let { code, name, parent_id, sort_order } = req.body;
 
@@ -40,7 +40,7 @@ router.post('/departments', requireAuth, requireRole(['admin']), async (req, res
 });
 
 // Update Department
-router.put('/departments/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.put('/departments/:id', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const { code, name, parent_id, sort_order } = req.body;
 
@@ -71,28 +71,52 @@ router.put('/departments/:id', requireAuth, requireRole(['admin']), async (req, 
 });
 
 // Delete Department
-router.delete('/departments/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.delete('/departments/:id', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  const client = await db.pool.connect();
   try {
+    await client.query('BEGIN');
+    const deptId = req.params.id;
+    const force = req.query.force === 'true';
+
     // Check if department has units
-    const unitsCheck = await db.query(
-      'SELECT COUNT(*) as count FROM org_unit WHERE department_id = $1',
-      [req.params.id]
+    const unitsResult = await client.query(
+      'SELECT id FROM org_unit WHERE department_id = $1',
+      [deptId]
     );
 
-    if (parseInt(unitsCheck.rows[0].count) > 0) {
-      throw new AppError({
-        statusCode: 400,
-        code: 'DEPARTMENT_HAS_UNITS',
-        message: 'Cannot delete department with units'
-      });
+    if (unitsResult.rowCount > 0) {
+      if (!force) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          code: 'DEPARTMENT_HAS_UNITS',
+          message: 'Cannot delete department with units',
+          unitCount: unitsResult.rowCount
+        });
+      }
+
+      // Force delete: Delete all units and their dependencies
+      console.log(`[DELETE] Force deleting department ${deptId} with ${unitsResult.rowCount} units`);
+      
+      for (const unit of unitsResult.rows) {
+        const unitId = unit.id;
+        // Delete dependent data for each unit
+        await client.query('DELETE FROM upload_job WHERE unit_id = $1', [unitId]);
+        await client.query('DELETE FROM history_actuals WHERE unit_id = $1', [unitId]);
+        await client.query('DELETE FROM correction_suggestion WHERE unit_id = $1', [unitId]);
+        await client.query('DELETE FROM report_draft WHERE unit_id = $1', [unitId]);
+        
+        // Delete the unit
+        await client.query('DELETE FROM org_unit WHERE id = $1', [unitId]);
+      }
     }
 
-    const result = await db.query(
+    const result = await client.query(
       'DELETE FROM org_department WHERE id = $1 RETURNING *',
-      [req.params.id]
+      [deptId]
     );
 
     if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
       throw new AppError({
         statusCode: 404,
         code: 'NOT_FOUND',
@@ -100,14 +124,18 @@ router.delete('/departments/:id', requireAuth, requireRole(['admin']), async (re
       });
     }
 
+    await client.query('COMMIT');
     return res.json({ success: true });
   } catch (error) {
+    await client.query('ROLLBACK');
     return next(error);
+  } finally {
+    client.release();
   }
 });
 
 // Create Unit
-router.post('/units', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.post('/units', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     let { code, name, department_id, sort_order } = req.body;
 
@@ -138,7 +166,7 @@ router.post('/units', requireAuth, requireRole(['admin']), async (req, res, next
 });
 
 // Update Unit
-router.put('/units/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.put('/units/:id', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const { code, name, department_id, sort_order } = req.body;
 
@@ -169,7 +197,7 @@ router.put('/units/:id', requireAuth, requireRole(['admin']), async (req, res, n
 });
 
 // Delete Unit
-router.delete('/units/:id', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.delete('/units/:id', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   const client = await db.pool.connect();
   try {
     await client.query('BEGIN');
@@ -213,7 +241,7 @@ router.delete('/units/:id', requireAuth, requireRole(['admin']), async (req, res
 
 
 // Reorder Items (Departments or Units)
-router.post('/reorder', requireAuth, requireRole(['admin']), async (req, res, next) => {
+router.post('/reorder', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const { type, items } = req.body; // type: 'department' | 'unit', items: [{id, sort_order}]
@@ -249,7 +277,7 @@ router.post('/reorder', requireAuth, requireRole(['admin']), async (req, res, ne
 });
 
 // Batch Import from Excel
-router.post('/batch-import', requireAuth, requireRole(['admin']), upload.single('file'), async (req, res, next) => {
+router.post('/batch-import', requireAuth, requireRole(['admin', 'maintainer']), upload.single('file'), async (req, res, next) => {
   const client = await db.getClient();
   try {
     if (!req.file) {

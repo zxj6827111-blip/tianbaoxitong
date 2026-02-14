@@ -10,7 +10,8 @@ import {
   LayoutGrid,
   List as ListIcon,
   Building2,
-  PenSquare
+  PenSquare,
+  Lock
 } from 'lucide-react';
 
 export type UnitListProps = {
@@ -35,22 +36,22 @@ export type UnitListProps = {
 const archiveBadge = (status: UnitRow['archive_status']) => {
   if (status === 'missing') {
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-50 text-red-600 border border-red-100">
-        缺归档
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-50 text-red-600 border border-red-100">
+        <FileQuestion className="w-3 h-3" /> 缺归档
       </span>
     );
   }
 
   if (status === 'locked') {
     return (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-        已锁定
+      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+        <Lock className="w-3 h-3" /> 已锁定
       </span>
     );
   }
 
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-50 text-green-600 border border-green-100">
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-50 text-green-700 border border-green-100">
       <CheckCircle2 className="w-3 h-3" /> 已入库
     </span>
   );
@@ -59,8 +60,8 @@ const archiveBadge = (status: UnitRow['archive_status']) => {
 const baseInfoBadge = (isOk: boolean) => {
   if (isOk) return null;
   return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-100">
-      缺基础
+    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-100">
+      <AlertTriangle className="w-3 h-3" /> 缺基础
     </span>
   );
 };
@@ -160,7 +161,7 @@ const UnitList: React.FC<UnitListProps> = ({
 
       {viewType === 'grid' ? (
         <div className="flex-1 overflow-y-auto p-4 content-scrollbar">
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4">
             {units.map((unit) => {
               const isSelected = selectedUnitId === unit.id;
               return (
@@ -168,23 +169,24 @@ const UnitList: React.FC<UnitListProps> = ({
                   key={unit.id}
                   onClick={() => onSelect(unit.id)}
                   className={`
-                    group relative flex flex-col p-4 rounded-xl border transition-all cursor-pointer
+                    group relative flex flex-col min-h-[156px] p-4 rounded-xl border transition-all cursor-pointer
                     ${isSelected
-                      ? 'border-brand-500 ring-1 ring-brand-500 bg-brand-50/10'
+                      ? 'border-brand-500 ring-1 ring-brand-500 bg-brand-50/20 shadow-sm'
                       : 'border-slate-200 bg-white hover:border-brand-300 hover:shadow-md'}
                   `}
                 >
-                  <div className="flex items-start justify-between mb-3 relative">
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
                       <div className="w-10 h-10 rounded-lg flex items-center justify-center shrink-0 bg-slate-100 text-slate-500 group-hover:bg-brand-50 group-hover:text-brand-500 transition-colors">
                         <Building2 className="w-5 h-5" />
                       </div>
-                      <div className="flex-1 min-w-0">
-                        <h3 className="font-semibold text-sm text-slate-700 line-clamp-2">{unit.name}</h3>
+                      <div className="min-w-0">
+                        <h3 className="font-semibold text-[15px] leading-5 text-slate-800 whitespace-normal break-words" title={unit.name}>{unit.name}</h3>
+                        <p className="text-[11px] text-slate-400 font-mono mt-0.5 whitespace-normal break-all" title={unit.code}>{unit.code}</p>
                       </div>
                     </div>
 
-                    <div className="absolute top-0 right-0 p-1 hidden group-hover:flex items-center gap-1 bg-white/95 backdrop-blur-sm border border-slate-200 shadow-sm rounded-lg transition-all z-10">
+                    <div className="absolute bottom-3 right-3 p-1 flex items-center gap-1 bg-white/95 backdrop-blur-sm border border-slate-200 shadow-sm rounded-lg opacity-0 group-hover:opacity-100 transition-opacity z-10 shrink-0">
                       {onEdit && (
                         <button
                           onClick={(event) => { event.stopPropagation(); onEdit(unit); }}
@@ -206,11 +208,11 @@ const UnitList: React.FC<UnitListProps> = ({
                     </div>
                   </div>
 
-                  <div className="mt-auto flex flex-wrap gap-2 pt-2">
+                  <div className="mt-4 flex flex-wrap gap-2">
                     {archiveBadge(unit.archive_status)}
                     {baseInfoBadge(unit.baseinfo_ok)}
                     {unit.pending_count > 0 && (
-                      <span className="px-2 py-0.5 text-xs font-medium rounded-full bg-orange-50 text-orange-600 flex items-center gap-1 border border-orange-100">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-orange-50 text-orange-700 border border-orange-100">
                         <AlertTriangle className="w-3 h-3" /> {unit.pending_count} 条待审
                       </span>
                     )}
@@ -222,7 +224,7 @@ const UnitList: React.FC<UnitListProps> = ({
             {onAddUnit && (
               <button
                 onClick={onAddUnit}
-                className="flex flex-col items-center justify-center p-4 rounded-xl border border-dashed border-slate-300 bg-slate-50/50 hover:bg-slate-50 hover:border-brand-400 group transition-all h-full min-h-[140px]"
+                className="flex flex-col items-center justify-center p-4 rounded-xl border border-dashed border-slate-300 bg-slate-50/50 hover:bg-slate-50 hover:border-brand-400 group transition-all h-full min-h-[156px]"
               >
                 <div className="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform shadow-sm">
                   <Plus className="w-5 h-5 text-slate-400 group-hover:text-brand-500" />
@@ -237,9 +239,9 @@ const UnitList: React.FC<UnitListProps> = ({
           <table className="w-full text-left border-collapse">
             <thead className="bg-slate-50 sticky top-0 z-10">
               <tr>
-                <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-[30%]">单位名称</th>
-                <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-[15%]">归档状态</th>
-                <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-[25%]">基础信息更新时间</th>
+                <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-[34%]">单位名称</th>
+                <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-[20%]">归档状态</th>
+                <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider w-[24%]">更新时间</th>
                 <th className="px-4 py-3 text-xs font-semibold text-slate-500 uppercase tracking-wider text-right">操作</th>
               </tr>
             </thead>
@@ -269,11 +271,20 @@ const UnitList: React.FC<UnitListProps> = ({
                     <td className="px-4 py-3 text-sm text-slate-500">
                       <div className="flex flex-col gap-1 items-start">
                         {baseInfoBadge(unit.baseinfo_ok)}
-                        <span className="text-[10px] text-slate-400">{new Date(unit.updated_at).toLocaleDateString()}</span>
+                        <span className="text-[10px] text-slate-400">{new Date(unit.updated_at).toLocaleDateString('zh-CN')}</span>
                       </div>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {onEdit && (
+                          <button
+                            onClick={(event) => { event.stopPropagation(); onEdit(unit); }}
+                            className="p-1.5 text-slate-400 hover:text-brand-600 hover:bg-brand-50 rounded bg-white border border-slate-200 shadow-sm"
+                            title="编辑"
+                          >
+                            <PenSquare className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         {onDelete && (
                           <button
                             onClick={(event) => { event.stopPropagation(); onDelete(unit); }}

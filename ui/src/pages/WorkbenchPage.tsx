@@ -1017,7 +1017,7 @@ export const WorkbenchPage: React.FC = () => {
 
         <div className="bg-white rounded-xl border border-slate-200 p-5">
           <ValidationPanel
-            draftId={draftId}
+            draftId={draftId!}
             ifMatchUpdatedAt={draftMeta?.updated_at || undefined}
             onValidate={() => toast.info('校验完成')}
             onValidated={(result) => {
@@ -1177,9 +1177,8 @@ export const WorkbenchPage: React.FC = () => {
                     key={step.key}
                     type="button"
                     onClick={() => setCurrentStep(step.key)}
-                    className={`w-full flex items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors ${
-                      isCurrent ? 'bg-brand-50 border border-brand-200' : 'hover:bg-slate-50 border border-transparent'
-                    }`}
+                    className={`w-full flex items-start gap-2 rounded-lg px-3 py-2 text-left transition-colors ${isCurrent ? 'bg-brand-50 border border-brand-200' : 'hover:bg-slate-50 border border-transparent'
+                      }`}
                   >
                     <span className="mt-0.5">
                       {isCompleted ? (

@@ -4,8 +4,8 @@ import { History } from 'lucide-react';
 interface ManualInput {
   id?: number;
   key: string;
-  value_text?: string;
-  value_numeric?: number;
+  value_text?: string | null;
+  value_numeric?: number | null;
   notes?: string;
 }
 

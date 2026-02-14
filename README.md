@@ -60,11 +60,24 @@ npm test
 ### 黄金样回归
 
 ```bash
-pnpm golden:update
-pnpm golden:check
+npm run golden:update
+npm run golden:check
 ```
 
 黄金样输出目录：`artifacts/golden/`。
+
+解析相关测试：
+
+```bash
+npm run test:parser
+npm run test:parser:full
+```
+
+前端截图 E2E：
+
+```bash
+npm run test:e2e
+```
 
 ## API 最小骨架
 

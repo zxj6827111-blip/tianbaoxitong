@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { WorkbenchPage } from './pages/WorkbenchPage';
 import AdminPage from './pages/AdminPage';
+import AdminUnitDetailPage from './pages/AdminUnitDetailPage';
 import DemoPage from './pages/DemoPage';
 import { Loading } from './components/ui/Loading';
 
@@ -44,6 +45,14 @@ const AppRoutes: React.FC = () => {
         element={
           <ProtectedRoute>
             <AdminPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/admin/unit/:unitId"
+        element={
+          <ProtectedRoute>
+            <AdminUnitDetailPage />
           </ProtectedRoute>
         }
       />

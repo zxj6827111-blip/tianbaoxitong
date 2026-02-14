@@ -1,6 +1,9 @@
 const { BUDGET_MAPPING } = require('./budgetMapping');
 
-const HISTORY_ACTUAL_KEYS = Array.from(new Set(BUDGET_MAPPING.map((item) => item.key)));
+const HISTORY_ACTUAL_KEYS = Array.from(new Set([
+  ...BUDGET_MAPPING.map((item) => item.key),
+  'operation_fund'
+]));
 
 const HISTORY_ACTUAL_FIELD_DEFS = [
   { key: 'budget_revenue_total', label: '收入预算合计（万元）', group: '收支预算' },
@@ -21,7 +24,8 @@ const HISTORY_ACTUAL_FIELD_DEFS = [
   { key: 'three_public_vehicle_total', label: '公务用车购置及运行费（万元）', group: '三公经费' },
   { key: 'three_public_vehicle_purchase', label: '公务用车购置费（万元）', group: '三公经费' },
   { key: 'three_public_vehicle_operation', label: '公务用车运行费（万元）', group: '三公经费' },
-  { key: 'three_public_reception', label: '公务接待费（万元）', group: '三公经费' }
+  { key: 'three_public_reception', label: '公务接待费（万元）', group: '三公经费' },
+  { key: 'operation_fund', label: '机关运行经费预算数（万元）', group: '三公经费' }
 ];
 
 module.exports = {

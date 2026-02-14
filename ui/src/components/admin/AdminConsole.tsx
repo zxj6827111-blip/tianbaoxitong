@@ -4,9 +4,8 @@ import { ArrowLeft, Settings, Upload } from 'lucide-react';
 import { apiClient } from '../../utils/apiClient';
 import DepartmentTree from './DepartmentTree';
 import UnitList from './UnitList';
-import UnitDetailPanel from './UnitDetail';
 import OrgImportModal from './OrgImportModal';
-import { DepartmentNode, UnitDetail, UnitRow } from '../../data/mockAdminData';
+import { DepartmentNode, UnitRow } from '../../data/mockAdminData';
 
 const DEFAULT_PAGE_SIZE = 10;
 const CURRENT_YEAR = new Date().getFullYear();
@@ -26,10 +25,8 @@ const AdminConsole: React.FC = () => {
 
   const [departments, setDepartments] = useState<DepartmentNode[]>([]);
   const [units, setUnits] = useState<UnitRow[]>([]);
-  const [unitDetail, setUnitDetail] = useState<UnitDetail | null>(null);
 
   const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null);
-  const [selectedUnitId, setSelectedUnitId] = useState<string | null>(searchParams.get('unit'));
   const [filter, setFilter] = useState<string | null>(searchParams.get('filter'));
   const [budgetYear, setBudgetYear] = useState<number>(parseSearchYear(searchParams.get('year')));
 
@@ -51,9 +48,8 @@ const AdminConsole: React.FC = () => {
     const params = new URLSearchParams();
     params.set('year', String(budgetYear));
     if (filter) params.set('filter', filter);
-    if (selectedUnitId) params.set('unit', selectedUnitId);
     setSearchParams(params, { replace: true });
-  }, [budgetYear, filter, selectedUnitId, setSearchParams]);
+  }, [budgetYear, filter, setSearchParams]);
 
   const loadDepartments = async () => {
     try {
@@ -83,20 +79,6 @@ const AdminConsole: React.FC = () => {
       console.error('Failed to load units:', error);
       setUnits([]);
       setTotal(0);
-    }
-  };
-
-  const loadUnitDetail = async (unitId: string) => {
-    try {
-      const response = await fetch(`/api/admin/units/${unitId}?year=${budgetYear}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }
-      });
-      if (!response.ok) throw new Error('Failed to fetch unit detail');
-      const data = await response.json();
-      setUnitDetail(data.unit ?? null);
-    } catch (error) {
-      console.error('Failed to load unit detail:', error);
-      setUnitDetail(null);
     }
   };
 
@@ -130,7 +112,7 @@ const AdminConsole: React.FC = () => {
   };
 
   const handleEdit = (node: DepartmentNode) => {
-    const newName = prompt('请输入新的部门名称:', node.name);
+    const newName = prompt('请输入新的部门名称', node.name);
     if (!newName || newName === node.name) return;
 
     fetch(`/api/admin/org/departments/${node.id}`, {
@@ -141,44 +123,63 @@ const AdminConsole: React.FC = () => {
       },
       body: JSON.stringify({ name: newName })
     })
-      .then((res) => res.ok ? loadDepartments() : Promise.reject())
+      .then((res) => (res.ok ? loadDepartments() : Promise.reject()))
       .catch(() => alert('编辑失败'));
   };
 
   const handleDelete = async (node: DepartmentNode) => {
     if (!confirm(`确定要删除部门“${node.name}”吗？`)) return;
     try {
-      const response = await fetch(`/api/admin/org/departments/${node.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }
-      });
+      const deleteDept = async (force: boolean = false) => {
+        const response = await fetch(`/api/admin/org/departments/${node.id}${force ? '?force=true' : ''}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${localStorage.getItem('auth_token')}` }
+        });
 
-      if (response.ok) {
-        await loadDepartments();
-        if (selectedDepartment === node.id) setSelectedDepartment(null);
-      } else {
-        const data = await response.json();
-        alert(data.message || '删除失败');
-      }
+        if (response.ok) {
+          await loadDepartments();
+          if (selectedDepartment === node.id) setSelectedDepartment(null);
+        } else {
+          const data = await response.json();
+          if (data.code === 'DEPARTMENT_HAS_UNITS') {
+            if (confirm(`该部门下包含 ${data.unitCount} 个单位，是否强制删除？\n\n警告：这将永久删除该部门下所有单位及相关数据（上传文件、审改建议、归档记录等），此操作不可恢复！`)) {
+              await deleteDept(true);
+            }
+          } else {
+            alert(data.message || '删除失败');
+          }
+        }
+      };
+
+      await deleteDept(false);
     } catch (error) {
       alert(`删除失败: ${error}`);
     }
   };
 
-  const handleAdd = (parentId: string | null) => {
-    const name = prompt('请输入部门名称:');
+  const handleAdd = async (parentId: string | null) => {
+    const name = prompt('请输入部门名称');
     if (!name) return;
 
-    fetch('/api/admin/org/departments', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${localStorage.getItem('auth_token')}`
-      },
-      body: JSON.stringify({ name, parent_id: parentId, sort_order: 0 })
-    })
-      .then((res) => res.ok ? loadDepartments() : Promise.reject())
-      .catch(() => alert('添加失败'));
+    try {
+      const response = await fetch('/api/admin/org/departments', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${localStorage.getItem('auth_token')}`
+        },
+        body: JSON.stringify({ name, parent_id: parentId, sort_order: 0 })
+      });
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.message || response.statusText || 'Create failed');
+      }
+
+      await loadDepartments();
+    } catch (error: any) {
+      alert(`添加失败: ${error?.message || error}`);
+    }
   };
 
   const handleDeleteUnit = async (unit: UnitRow) => {
@@ -191,7 +192,6 @@ const AdminConsole: React.FC = () => {
 
       if (response.ok) {
         await loadUnits();
-        if (selectedUnitId === unit.id) setSelectedUnitId(null);
       } else {
         const data = await response.json().catch(() => ({}));
         const errorMsg = data.message || response.statusText || '';
@@ -212,7 +212,7 @@ const AdminConsole: React.FC = () => {
       return;
     }
 
-    const name = prompt('请输入单位名称:');
+    const name = prompt('请输入单位名称');
     if (!name) return;
 
     fetch('/api/admin/org/units', {
@@ -235,7 +235,7 @@ const AdminConsole: React.FC = () => {
   };
 
   const handleEditUnit = (unit: UnitRow) => {
-    const newName = prompt('请输入新的单位名称:', unit.name);
+    const newName = prompt('请输入新的单位名称', unit.name);
     if (!newName || newName === unit.name) return;
 
     fetch(`/api/admin/org/units/${unit.id}`, {
@@ -264,14 +264,6 @@ const AdminConsole: React.FC = () => {
   useEffect(() => {
     loadUnits();
   }, [budgetYear, selectedDepartment, searchQuery, filter, page]);
-
-  useEffect(() => {
-    if (selectedUnitId) {
-      loadUnitDetail(selectedUnitId);
-    } else {
-      setUnitDetail(null);
-    }
-  }, [budgetYear, selectedUnitId]);
 
   const selectedDepartmentLabel = useMemo(() => {
     const found = departments.find((dept) => dept.id === selectedDepartment);
@@ -312,7 +304,7 @@ const AdminConsole: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(280px,1fr)_minmax(400px,1.5fr)] gap-4 flex-1 min-h-0 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(520px,1fr)] gap-4 flex-1 min-h-0 items-start">
         <section className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden animate-fade-in" style={{ animationDelay: '0ms' }}>
           <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
             <h2 className="font-bold text-slate-800 flex items-center gap-2">
@@ -331,10 +323,7 @@ const AdminConsole: React.FC = () => {
             <DepartmentTree
               departments={departments}
               selectedId={selectedDepartment}
-              onSelect={(id) => {
-                setSelectedDepartment(id);
-                setSelectedUnitId(null);
-              }}
+              onSelect={(id) => setSelectedDepartment(id)}
               onEdit={handleEdit}
               onDelete={handleDelete}
               onAdd={handleAdd}
@@ -354,7 +343,7 @@ const AdminConsole: React.FC = () => {
                 {selectedDepartmentLabel}
               </span>
             </h2>
-            <div className="text-xs text-slate-400">共 {total} 条记录</div>
+            <div className="text-xs text-slate-400">共 {total} 条记录，点击单位进入详情页</div>
           </div>
           <div className="flex-1 overflow-hidden flex flex-col">
             <UnitList
@@ -362,31 +351,19 @@ const AdminConsole: React.FC = () => {
               page={page}
               pageSize={DEFAULT_PAGE_SIZE}
               total={total}
-              selectedUnitId={selectedUnitId}
+              selectedUnitId={null}
               filter={filter}
               search={searchInput}
               onSearchChange={setSearchInput}
               onFilterChange={(nextFilter) => setFilter(nextFilter)}
               onPageChange={(nextPage) => setPage(nextPage)}
-              onSelect={(id) => setSelectedUnitId(id)}
+              onSelect={(id) => navigate(`/admin/unit/${id}?year=${budgetYear}`)}
               onDelete={handleDeleteUnit}
               onEdit={handleEditUnit}
               viewMode={viewMode}
               onViewModeChange={setViewMode}
               onAddUnit={handleAddUnit}
             />
-          </div>
-        </section>
-
-        <section className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden animate-fade-in" style={{ animationDelay: '200ms' }}>
-          <div className="p-4 border-b border-slate-100 bg-slate-50/50">
-            <h2 className="font-bold text-slate-800 flex items-center gap-2">
-              <div className="w-1 h-4 bg-brand-600 rounded-full"></div>
-              单位详情
-            </h2>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            <UnitDetailPanel unit={unitDetail} year={budgetYear} />
           </div>
         </section>
 

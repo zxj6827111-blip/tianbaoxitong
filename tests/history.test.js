@@ -225,4 +225,192 @@ describe('history actuals import and lookup', () => {
     expect(fieldMap.get('three_public_reception')).toBe(22.22);
     expect(fieldMap.has('three_public_vehicle_total')).toBe(true);
   });
+
+  it('saves parsed archive facts into history actuals and supports yearly lookup', async () => {
+    const { deptId, unitId } = await createDepartmentAndUnit({ unitCode: 'U205', departmentCode: 'D205' });
+    const { userId } = await seedUserWithRole({ roleName: 'admin', unitId, deptId });
+    const adminToken = await login('admin@example.com');
+
+    const reportResult = await db.query(
+      `INSERT INTO org_dept_annual_report
+         (department_id, year, report_type, file_name, file_path, file_hash, file_size, uploaded_by)
+       VALUES ($1, $2, 'BUDGET', 'sample.pdf', '/tmp/sample.pdf', 'hash-1', 1234, $3)
+       RETURNING id`,
+      [deptId, 2025, userId]
+    );
+
+    const saveResponse = await request(app)
+      .post('/api/admin/archives/save-budget-facts')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        report_id: reportResult.rows[0].id,
+        unit_id: unitId,
+        items: [
+          { key: '收入合计', value: 101.11 },
+          { key: '财政拨款收入', value: 88.66 },
+          { key: '因公出国（境）费', value: 6.22 },
+          { key: '公务接待费', value: 2.05 },
+          { key: '未匹配字段', value: 9.99 }
+        ]
+      });
+
+    expect(saveResponse.status).toBe(200);
+    expect(saveResponse.body.upserted_count).toBeGreaterThanOrEqual(4);
+    expect(saveResponse.body.unmatched_count).toBeGreaterThanOrEqual(1);
+
+    const yearsResponse = await request(app)
+      .get(`/api/admin/history/units/${unitId}/years`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(yearsResponse.status).toBe(200);
+    expect(yearsResponse.body.years[0].year).toBe(2025);
+
+    const valuesResponse = await request(app)
+      .get(`/api/admin/history/units/${unitId}/years/2025`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(valuesResponse.status).toBe(200);
+
+    const fieldMap = new Map(valuesResponse.body.fields.map((item) => [item.key, item.value]));
+    expect(fieldMap.get('budget_revenue_total')).toBe(101.11);
+    expect(fieldMap.get('budget_revenue_fiscal')).toBe(88.66);
+    expect(fieldMap.get('three_public_outbound')).toBe(6.22);
+    expect(fieldMap.get('three_public_reception')).toBe(2.05);
+  });
+
+  it('auto extracts core fields from parsed table_data when manual items are noisy', async () => {
+    const { deptId, unitId } = await createDepartmentAndUnit({ unitCode: 'U206', departmentCode: 'D206' });
+    const { userId } = await seedUserWithRole({ roleName: 'admin', unitId, deptId });
+    const adminToken = await login('admin@example.com');
+
+    const reportResult = await db.query(
+      `INSERT INTO org_dept_annual_report
+         (department_id, year, report_type, file_name, file_path, file_hash, file_size, uploaded_by)
+       VALUES ($1, $2, 'BUDGET', 'sample.pdf', '/tmp/sample.pdf', 'hash-2', 1234, $3)
+       RETURNING id`,
+      [deptId, 2025, userId]
+    );
+    const reportId = reportResult.rows[0].id;
+
+    const budgetSummaryRows = [
+      ['编制部门：测试部门', '单位：元'],
+      ['本年收入', '本年支出'],
+      ['项目', '预算数', '项目', '预算数'],
+      ['一、财政拨款收入', '189,767,551', '一、一般公共服务支出', '3,296,600'],
+      ['二、事业收入', '', '二、公共安全支出', '2,878,025'],
+      ['三、事业单位经营收入', '', '三、教育支出', '250,000'],
+      ['四、其他收入', '', '四、科学技术支出', '100,000'],
+      ['收入总计', '189,767,551', '支出总计', '189,767,551']
+    ];
+    const threePublicRows = [
+      ['编制部门：测试部门', '单位:万元'],
+      ['合计', '因公出国(境)费', '公务接待费'],
+      ['小计', '购置费', '运行费'],
+      ['37.91', '0', '1.35', '36.56', '15', '21.56', '464.64']
+    ];
+
+    await db.query(
+      `INSERT INTO org_dept_table_data
+         (report_id, department_id, year, report_type, table_key, table_title, page_numbers, row_count, col_count, data_json, created_by)
+       VALUES
+         ($1, $2, 2025, 'BUDGET', 'budget_summary', 'budget_summary', '{1}', $3, 4, $4::jsonb, $5),
+         ($1, $2, 2025, 'BUDGET', 'three_public', 'three_public', '{2}', $6, 7, $7::jsonb, $5)`,
+      [
+        reportId,
+        deptId,
+        budgetSummaryRows.length,
+        JSON.stringify(budgetSummaryRows),
+        userId,
+        threePublicRows.length,
+        JSON.stringify(threePublicRows)
+      ]
+    );
+
+    const saveResponse = await request(app)
+      .post('/api/admin/archives/save-budget-facts')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        report_id: reportId,
+        unit_id: unitId,
+        items: [{ key: '201 05 07 专项普查活动 438300 438300 0 0 0', value: 0 }]
+      });
+
+    expect(saveResponse.status).toBe(200);
+    expect(saveResponse.body.auto_mapped_count).toBeGreaterThanOrEqual(8);
+    expect(saveResponse.body.upserted_count).toBeGreaterThanOrEqual(8);
+
+    const valuesResponse = await request(app)
+      .get(`/api/admin/history/units/${unitId}/years/2025`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(valuesResponse.status).toBe(200);
+
+    const fieldMap = new Map(valuesResponse.body.fields.map((item) => [item.key, item.value]));
+    expect(fieldMap.get('budget_revenue_total')).toBe(18976.76);
+    expect(fieldMap.get('budget_revenue_fiscal')).toBe(18976.76);
+    expect(fieldMap.get('budget_expenditure_total')).toBe(18976.76);
+    expect(fieldMap.get('fiscal_grant_revenue_total')).toBe(18976.76);
+    expect(fieldMap.get('fiscal_grant_expenditure_total')).toBe(18976.76);
+    expect(fieldMap.get('three_public_total')).toBe(37.91);
+    expect(fieldMap.get('three_public_reception')).toBe(1.35);
+    expect(fieldMap.get('three_public_vehicle_operation')).toBe(21.56);
+    expect(fieldMap.get('operation_fund')).toBe(464.64);
+  });
+
+  it('keeps auto table facts when manual parser has likely unit-mismatch values', async () => {
+    const { deptId, unitId } = await createDepartmentAndUnit({ unitCode: 'U207', departmentCode: 'D207' });
+    const { userId } = await seedUserWithRole({ roleName: 'admin', unitId, deptId });
+    const adminToken = await login('admin@example.com');
+
+    const reportResult = await db.query(
+      `INSERT INTO org_dept_annual_report
+         (department_id, year, report_type, file_name, file_path, file_hash, file_size, uploaded_by)
+       VALUES ($1, $2, 'BUDGET', 'sample.pdf', '/tmp/sample.pdf', 'hash-3', 1234, $3)
+       RETURNING id`,
+      [deptId, 2025, userId]
+    );
+    const reportId = reportResult.rows[0].id;
+
+    const threePublicRows = [
+      ['header'],
+      ['total', 'outbound', 'reception', 'vehicle_total', 'vehicle_purchase', 'vehicle_operation', 'operation'],
+      ['37.91', '0', '1.35', '36.56', '15', '21.56', '464.64']
+    ];
+
+    await db.query(
+      `INSERT INTO org_dept_table_data
+         (report_id, department_id, year, report_type, table_key, table_title, page_numbers, row_count, col_count, data_json, created_by)
+       VALUES
+         ($1, $2, 2025, 'BUDGET', 'three_public', 'three_public', '{1}', $3, 7, $4::jsonb, $5)`,
+      [
+        reportId,
+        deptId,
+        threePublicRows.length,
+        JSON.stringify(threePublicRows),
+        userId
+      ]
+    );
+
+    const saveResponse = await request(app)
+      .post('/api/admin/archives/save-budget-facts')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        report_id: reportId,
+        unit_id: unitId,
+        items: [
+          { key: 'threepublictotal', value: 379100 },
+          { key: 'receptionexpense', value: 13500 }
+        ]
+      });
+
+    expect(saveResponse.status).toBe(200);
+    expect(saveResponse.body.manual_conflict_skipped_count).toBeGreaterThanOrEqual(2);
+
+    const valuesResponse = await request(app)
+      .get(`/api/admin/history/units/${unitId}/years/2025`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(valuesResponse.status).toBe(200);
+
+    const fieldMap = new Map(valuesResponse.body.fields.map((item) => [item.key, item.value]));
+    expect(fieldMap.get('three_public_total')).toBe(37.91);
+    expect(fieldMap.get('three_public_reception')).toBe(1.35);
+    expect(fieldMap.get('operation_fund')).toBe(464.64);
+  });
 });

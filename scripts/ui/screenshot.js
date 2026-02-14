@@ -1,6 +1,7 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const net = require('node:net');
 const { chromium } = require('playwright');
 
 const ROOT_DIR = path.resolve(__dirname, '..', '..');
@@ -28,10 +29,63 @@ const ensureDir = (dir) => {
   }
 };
 
+const waitForPageSettled = async (page, url) => {
+  await page.goto(url, { waitUntil: 'networkidle' });
+  await page.locator('body').waitFor({ state: 'visible' });
+};
+
+const getAvailablePort = async () => {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+
+  const address = server.address();
+  const port = address && typeof address === 'object' ? address.port : null;
+
+  await new Promise((resolve) => server.close(resolve));
+  if (!port) {
+    throw new Error('Unable to allocate a free port for ui:dev');
+  }
+  return port;
+};
+
+const stopServer = async (child) => {
+  if (!child || child.exitCode !== null) {
+    return;
+  }
+
+  await new Promise((resolve) => {
+    const done = () => resolve();
+    child.once('exit', done);
+
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore',
+        shell: true
+      });
+      killer.on('exit', () => resolve());
+      setTimeout(resolve, 3000);
+      return;
+    }
+
+    child.kill('SIGTERM');
+    setTimeout(() => {
+      if (child.exitCode === null) {
+        child.kill('SIGKILL');
+      }
+      resolve();
+    }, 3000);
+  });
+};
+
 const run = async () => {
   ensureDir(OUTPUT_DIR);
+  const uiPort = await getAvailablePort();
+  const baseUrl = `http://localhost:${uiPort}`;
 
-  const devServer = spawn('npm', ['run', 'ui:dev'], {
+  const devServer = spawn('npm', ['run', 'ui:dev', '--', '--host', '127.0.0.1', '--port', String(uiPort), '--strictPort'], {
     cwd: ROOT_DIR,
     stdio: 'inherit',
     env: { ...process.env },
@@ -40,26 +94,23 @@ const run = async () => {
 
   let browser;
   try {
-    await waitForServer('http://localhost:5173/admin');
+    await waitForServer(`${baseUrl}/admin`);
     browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 
-    await page.goto('http://localhost:5173/admin', { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    await waitForPageSettled(page, `${baseUrl}/admin`);
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'admin-overview.png'), fullPage: true });
 
-    await page.goto('http://localhost:5173/admin?unit=unit-1', { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    await waitForPageSettled(page, `${baseUrl}/admin?unit=unit-1`);
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'admin-unit-detail.png'), fullPage: true });
 
-    await page.goto('http://localhost:5173/admin?filter=pendingSug', { waitUntil: 'networkidle' });
-    await page.waitForTimeout(500);
+    await waitForPageSettled(page, `${baseUrl}/admin?filter=pendingSug`);
     await page.screenshot({ path: path.join(OUTPUT_DIR, 'admin-filter-pending.png'), fullPage: true });
   } finally {
     if (browser) {
       await browser.close();
     }
-    devServer.kill('SIGTERM');
+    await stopServer(devServer);
   }
 };
 
