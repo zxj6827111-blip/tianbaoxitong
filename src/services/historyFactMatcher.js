@@ -1,12 +1,13 @@
-const normalizeText = (input) => {
+﻿const normalizeText = (input) => {
   return String(input || '')
     .toLowerCase()
     .trim()
     .replace(/[“”"'`]/g, '')
-    .replace(/[（(].*?[)）]/g, '')
+    .replace(/[（）()\[\]{}]/g, '')
     .replace(/[,:;，。；：、]/g, '')
-    .replace(/[\s\r\n\t]+/g, '')
-    .replace(/万元|万|元/g, '');
+    .replace(/\s+/g, '')
+    .replace(/万元|万?元/g, '')
+    .trim();
 };
 
 const EXACT_ALIAS_MAP = new Map([
@@ -35,8 +36,8 @@ const EXACT_ALIAS_MAP = new Map([
 
   ['三公经费合计', 'three_public_total'],
   ['三公经费', 'three_public_total'],
-  ['因公出国费', 'three_public_outbound'],
   ['因公出国境费', 'three_public_outbound'],
+  ['因公出国费', 'three_public_outbound'],
   ['公务用车购置及运行费', 'three_public_vehicle_total'],
   ['公务用车购置和运行费', 'three_public_vehicle_total'],
   ['公务用车购置费', 'three_public_vehicle_purchase'],
@@ -61,6 +62,19 @@ const EXACT_ALIAS_MAP = new Map([
   ['receptionexpense', 'three_public_reception'],
   ['operationfund', 'operation_fund']
 ]);
+
+let dynamicAliasMap = new Map();
+
+const setApprovedAliasMappings = (rows) => {
+  const next = new Map();
+  for (const row of rows || []) {
+    const normalized = normalizeText(row?.normalized_label || row?.raw_label || row?.rawLabel || '');
+    const resolvedKey = String(row?.resolved_key || row?.resolvedKey || '').trim();
+    if (!normalized || !resolvedKey) continue;
+    next.set(normalized, resolvedKey);
+  }
+  dynamicAliasMap = next;
+};
 
 const FUZZY_RULES = [
   { key: 'three_public_total', test: (text) => text.includes('三公') && text.includes('合计') },
@@ -88,19 +102,50 @@ const FUZZY_RULES = [
   { key: 'budget_revenue_total', test: (text) => text.includes('收入') && (text.includes('总计') || text.includes('合计') || text.includes('本年收入')) }
 ];
 
-const resolveHistoryActualKey = (rawLabel) => {
+const resolveHistoryActualKeyMeta = (rawLabel) => {
   const normalized = normalizeText(rawLabel);
-  if (!normalized) return null;
+  if (!normalized) {
+    return { key: null, source: null, confidence: 'UNRECOGNIZED', normalized_label: normalized };
+  }
 
   if (EXACT_ALIAS_MAP.has(normalized)) {
-    return EXACT_ALIAS_MAP.get(normalized);
+    return {
+      key: EXACT_ALIAS_MAP.get(normalized),
+      source: 'EXACT_ALIAS',
+      confidence: 'HIGH',
+      normalized_label: normalized
+    };
+  }
+
+  if (dynamicAliasMap.has(normalized)) {
+    return {
+      key: dynamicAliasMap.get(normalized),
+      source: 'DYNAMIC_ALIAS',
+      confidence: 'HIGH',
+      normalized_label: normalized
+    };
   }
 
   const matched = FUZZY_RULES.find((rule) => rule.test(normalized));
-  return matched ? matched.key : null;
+  if (matched) {
+    return {
+      key: matched.key,
+      source: 'FUZZY_RULE',
+      confidence: 'MEDIUM',
+      normalized_label: normalized
+    };
+  }
+
+  return { key: null, source: null, confidence: 'UNRECOGNIZED', normalized_label: normalized };
+};
+
+const resolveHistoryActualKey = (rawLabel) => {
+  return resolveHistoryActualKeyMeta(rawLabel).key;
 };
 
 module.exports = {
   normalizeText,
-  resolveHistoryActualKey
+  setApprovedAliasMappings,
+  resolveHistoryActualKey,
+  resolveHistoryActualKeyMeta
 };

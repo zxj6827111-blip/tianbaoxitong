@@ -12,6 +12,8 @@ const TOKENS = {
   operationRevenue: '\u4e8b\u4e1a\u5355\u4f4d\u7ecf\u8425\u6536\u5165',
   otherRevenue: '\u5176\u4ed6\u6536\u5165',
   fiscalExpenditure: '\u8d22\u653f\u62e8\u6b3e\u652f\u51fa',
+  basicExpenditure: '\u57fa\u672c\u652f\u51fa',
+  projectExpenditure: '\u9879\u76ee\u652f\u51fa',
   threePublic: '\u4e09\u516c',
   outbound: '\u56e0\u516c\u51fa\u56fd',
   reception: '\u516c\u52a1\u63a5\u5f85\u8d39',
@@ -186,6 +188,8 @@ const extractFromBudgetSummary = (rows) => {
   const businessRow = findRow(rows, [TOKENS.businessRevenue], [TOKENS.operationRevenue]);
   const operationRow = findRow(rows, TOKENS.operationRevenue);
   const otherRow = findRow(rows, TOKENS.otherRevenue);
+  const basicRow = findRow(rows, TOKENS.basicExpenditure);
+  const projectRow = findRow(rows, TOKENS.projectExpenditure);
 
   result.budget_revenue_total = readValue(revenueTotalRow, 1, scale);
   result.budget_revenue_fiscal = readValue(fiscalRow, 1, scale, true);
@@ -193,6 +197,18 @@ const extractFromBudgetSummary = (rows) => {
   result.budget_revenue_operation = readValue(operationRow, 1, scale, true);
   result.budget_revenue_other = readValue(otherRow, 1, scale, true);
   result.budget_expenditure_total = readValue(expenditureTotalRow, 3, scale);
+
+  // Also extract basic/project expenditure from the summary table
+  // These rows typically have value in column 3 (expenditure side)
+  // or column 1 (if in a simpler format)
+  if (basicRow) {
+    const basicVal = readValue(basicRow, 3, scale) ?? readValue(basicRow, 1, scale);
+    if (basicVal !== null) result.budget_expenditure_basic = basicVal;
+  }
+  if (projectRow) {
+    const projectVal = readValue(projectRow, 3, scale) ?? readValue(projectRow, 1, scale);
+    if (projectVal !== null) result.budget_expenditure_project = projectVal;
+  }
 
   return result;
 };
@@ -240,12 +256,12 @@ const extractFromFiscalGrantSummary = (rows) => {
 const extractFromThreePublic = (rows) => {
   const scale = detectScaleToWanyuan(rows, { defaultScale: 1, tableKey: 'three_public' });
   const tableText = rowsToText(rows, 20);
-  const hasOperationFund = tableText.includes('\u673a\u5173\u8fd0\u884c\u7ecf\u8d39');
-  const hasOutboundLabel = tableText.includes('\u56e0\u516c\u51fa\u56fd') || tableText.includes('\u56e0\u516c\u51fa\u56fd(\u5883)');
-  const hasReceptionLabel = tableText.includes('\u516c\u52a1\u63a5\u5f85\u8d39');
-  const hasVehicleSubHeaders = tableText.includes('\u5c0f\u8ba1')
-    || tableText.includes('\u8d2d\u7f6e\u8d39')
-    || tableText.includes('\u8fd0\u884c\u8d39');
+  const hasOperationFund = tableText.includes('机关运行经费');
+  const hasOutboundLabel = tableText.includes('因公出国') || tableText.includes('因公出国(境)');
+  const hasReceptionLabel = tableText.includes('公务接待费');
+  const hasVehicleSubHeaders = tableText.includes('小计')
+    || tableText.includes('购置费')
+    || tableText.includes('运行费');
 
   const dataRow = [...rows]
     .reverse()
@@ -269,6 +285,25 @@ const extractFromThreePublic = (rows) => {
     operation_fund: null
   };
 
+  // Prefer positional extraction when the row keeps full columns (with blanks).
+  // Column order: [total, outbound, reception, vehicle_total, vehicle_purchase, vehicle_operation, operation_fund]
+  if (Array.isArray(dataRow) && dataRow.length >= 7) {
+    const parsedByCol = dataRow.map((cell) => parseNumber(cell));
+    const scaledAt = (idx, { blankAsZero = false } = {}) => {
+      const parsed = parsedByCol[idx];
+      if (parsed === null || parsed === undefined) return blankAsZero ? 0 : null;
+      return parsed * scale;
+    };
+    result.three_public_total = scaledAt(0);
+    result.three_public_outbound = scaledAt(1, { blankAsZero: true });
+    result.three_public_reception = scaledAt(2, { blankAsZero: true });
+    result.three_public_vehicle_total = scaledAt(3, { blankAsZero: true });
+    result.three_public_vehicle_purchase = scaledAt(4, { blankAsZero: true });
+    result.three_public_vehicle_operation = scaledAt(5, { blankAsZero: true });
+    result.operation_fund = scaledAt(6, { blankAsZero: hasOperationFund });
+    return result;
+  }
+
   // Standard layout: [total, outbound, reception, vehicle_total, vehicle_purchase, vehicle_operation, operation_fund]
   if (nums.length >= 7) {
     result.three_public_outbound = nums[1] ?? null;
@@ -286,7 +321,7 @@ const extractFromThreePublic = (rows) => {
     result.three_public_vehicle_total = nums[3] ?? null;
     result.three_public_vehicle_purchase = nums[4] ?? null;
     result.three_public_vehicle_operation = nums[5] ?? null;
-    return result;
+    // Don't return yet - we need to scan for operation_fund separately
   }
 
   // Sparse OCR layout (common): [three_public_total, three_public_reception, operation_fund]
@@ -310,6 +345,32 @@ const extractFromThreePublic = (rows) => {
     return result;
   }
 
+  // Four-value sparse layout:
+  // [three_public_total, outbound, reception, operation_fund]
+  if (nums.length === 4) {
+    result.three_public_total = nums[0] ?? null;
+    if (hasOperationFund) {
+      result.operation_fund = nums[3] ?? null;
+      if (hasOutboundLabel) result.three_public_outbound = nums[1] ?? null;
+      if (hasReceptionLabel) result.three_public_reception = nums[2] ?? null;
+      if (hasVehicleSubHeaders) {
+        result.three_public_vehicle_total = 0;
+        result.three_public_vehicle_purchase = 0;
+        result.three_public_vehicle_operation = 0;
+      }
+      return result;
+    }
+
+    if (hasOutboundLabel) result.three_public_outbound = nums[1] ?? null;
+    if (hasReceptionLabel) result.three_public_reception = nums[2] ?? null;
+    if (hasVehicleSubHeaders) {
+      result.three_public_vehicle_total = 0;
+      result.three_public_vehicle_purchase = 0;
+      result.three_public_vehicle_operation = 0;
+    }
+    return result;
+  }
+
   if (nums.length === 2) {
     result.three_public_total = nums[0] ?? null;
     if (hasOperationFund) {
@@ -320,6 +381,23 @@ const extractFromThreePublic = (rows) => {
       result.three_public_outbound = nums[1] ?? null;
     }
     return result;
+  }
+
+  // Independent scan for operation_fund if not yet extracted
+  // This handles cases where operation_fund is in a separate row from three_public items
+  if (result.operation_fund === null && hasOperationFund) {
+    const operationFundRow = findRow(rows, '机关运行经费');
+    if (operationFundRow) {
+      // Try to find the numeric value in the row
+      // Usually it's in the last few columns
+      for (let i = operationFundRow.length - 1; i >= 0; i--) {
+        const parsed = parseNumber(operationFundRow[i]);
+        if (parsed !== null) {
+          result.operation_fund = parsed * scale;
+          break;
+        }
+      }
+    }
   }
 
   return result;

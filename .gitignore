@@ -18,3 +18,20 @@ build/
 .agent/
 artifacts/
 sample.xlsx
+
+# Untracked uploads
+uploads/archives/
+uploads/processed/
+uploads/temp/
+
+# AI Artifacts
+AGENTS.md
+CLAUDE.md
+SKILL.md
+
+# Temporary files
+test_output.txt
+staged_status.txt
+staged_status_utf8.txt
+status.txt
+_pdf_finance25_text.txt

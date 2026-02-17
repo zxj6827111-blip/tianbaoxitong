@@ -1,4 +1,14 @@
 require('dotenv').config();
+
+// 🔒 安全防护：强制使用测试数据库
+if (!process.env.TEST_DATABASE_URL) {
+  console.error('🚨 错误: 缺少 TEST_DATABASE_URL 环境变量');
+  process.exit(1);
+}
+process.env.NODE_ENV = 'test';
+process.env.APP_DATABASE_URL = process.env.DATABASE_URL;
+process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+
 console.log('DEBUG: JWT_SECRET loaded:', process.env.JWT_SECRET ? 'YES' : 'NO', process.env.JWT_SECRET?.substring(0, 3));
 const fs = require('fs');
 const request = require('supertest');

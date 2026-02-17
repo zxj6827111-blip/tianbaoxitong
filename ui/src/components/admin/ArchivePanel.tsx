@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Upload, FileText, Download, Database, Save, CheckCircle2, AlertCircle, Plus, Trash2 } from 'lucide-react';
 import { DataParseModal } from './DataParseModal';
+import ArchivePreviewPanel from './ArchivePreviewPanel';
 
 interface ArchivePanelProps {
   departmentId: string;
@@ -38,6 +39,27 @@ type FiscalUsageItem = {
   itemName: string;
   amount: string;
   purpose: string;
+};
+
+type ArchiveLineItem = {
+  table_key?: string | null;
+  class_code?: string | null;
+  type_code?: string | null;
+  item_code?: string | null;
+  item_name?: string | null;
+};
+
+type FiscalLineItemReference = {
+  className: string;
+  typeName: string;
+  itemName: string;
+  normalizedClass: string;
+  normalizedType: string;
+  normalizedItem: string;
+};
+
+type FiscalUsageParseOptions = {
+  lineItemRefs?: FiscalLineItemReference[];
 };
 
 const FISCAL_CATEGORY: CategoryKey = 'EXPLANATION_FISCAL_DETAIL';
@@ -83,6 +105,12 @@ const FISCAL_TABLE_START_KEYWORDS = [
 ];
 const FISCAL_AMOUNT_REGEX = /[-+]?\d+(?:,\d{3})*(?:\.\d+)?\s*(?:亿元|万元|元)/;
 const FISCAL_HEADING_PREFIX_REGEX = /^(?:[一二三四五六七八九十百零〇\d]+[、.．]|第[一二三四五六七八九十百零〇\d]+(?:部分|章|节))/;
+const FISCAL_DETAIL_IGNORED_PATTERNS = [
+  /(?:19|20)?\d{0,2}年?(?:部门|单位)?财务收支预算总表/,
+  /(?:19|20)?\d{0,2}年?(?:部门|单位)?(?:财政拨款)?收支预算总表/,
+  /(?:19|20)?\d{0,2}年?(?:部门|单位)(?:收入|支出)预算总表/
+];
+const FISCAL_REF_TABLE_KEYS = new Set(['general_budget', 'gov_fund_budget', 'capital_budget']);
 
 const CN_DIGIT_MAP: Record<string, number> = {
   零: 0,
@@ -143,6 +171,8 @@ const getFiscalLineIndex = (line: string): { index: number; prefix: string } | n
   for (const pattern of arabicPatterns) {
     const match = text.match(pattern);
     if (!match) continue;
+    const remainder = text.slice(match[0].length).trim();
+    if (/^年/.test(remainder)) continue;
     const numeric = Number(match[1].replace(/[^\d]/g, ''));
     if (Number.isFinite(numeric) && numeric > 0) {
       return { index: numeric, prefix: match[0] };
@@ -157,6 +187,8 @@ const getFiscalLineIndex = (line: string): { index: number; prefix: string } | n
   for (const pattern of chinesePatterns) {
     const match = text.match(pattern);
     if (!match) continue;
+    const remainder = text.slice(match[0].length).trim();
+    if (/^年/.test(remainder)) continue;
     const normalized = match[1].replace(/[（()）)、.．\s]/g, '');
     const numeric = parseChineseIndex(normalized);
     if (numeric) {
@@ -177,6 +209,157 @@ const stripFiscalLinePrefix = (line: string) => {
 
 const appendContinuation = (base: string, extra: string) =>
   `${base.trim()}${extra.trim()}`.replace(/\s+/g, '').trim();
+
+const normalizeFiscalText = (value: string) => String(value || '')
+  .replace(/[\s“”"'`]/g, '')
+  .replace(/[（）()【】[\]、，。,:：；;·]/g, '')
+  .trim();
+
+const isIgnoredFiscalDetailLine = (value: string) => {
+  const normalized = normalizeFiscalText(value);
+  if (!normalized) return false;
+  return FISCAL_DETAIL_IGNORED_PATTERNS.some((pattern) => pattern.test(normalized));
+};
+
+const collectClassAndTypeNames = (rows: ArchiveLineItem[]) => {
+  const classNameMap = new Map<string, string>();
+  const typeNameMap = new Map<string, string>();
+
+  rows.forEach((row) => {
+    const classCode = String(row.class_code || '').trim();
+    const typeCode = String(row.type_code || '').trim();
+    const itemCode = String(row.item_code || '').trim();
+    const itemName = String(row.item_name || '').trim();
+    if (!itemName || isIgnoredFiscalDetailLine(itemName)) return;
+
+    if (classCode && !typeCode && !itemCode && !classNameMap.has(classCode)) {
+      classNameMap.set(classCode, itemName);
+      return;
+    }
+
+    if (classCode && typeCode && !itemCode && !typeNameMap.has(`${classCode}-${typeCode}`)) {
+      typeNameMap.set(`${classCode}-${typeCode}`, itemName);
+    }
+  });
+
+  return { classNameMap, typeNameMap };
+};
+
+const buildFiscalLineItemReferences = (rows: ArchiveLineItem[]): FiscalLineItemReference[] => {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  const filteredRows = rows.filter((row) => FISCAL_REF_TABLE_KEYS.has(String(row.table_key || '').trim()));
+  if (filteredRows.length === 0) return [];
+
+  const { classNameMap, typeNameMap } = collectClassAndTypeNames(filteredRows);
+  const seen = new Set<string>();
+  const references: FiscalLineItemReference[] = [];
+
+  filteredRows.forEach((row) => {
+    const classCode = String(row.class_code || '').trim();
+    const typeCode = String(row.type_code || '').trim();
+    const itemCode = String(row.item_code || '').trim();
+    const itemName = String(row.item_name || '').trim();
+    if (!classCode || !typeCode || !itemCode || !itemName) return;
+    if (isIgnoredFiscalDetailLine(itemName)) return;
+
+    const className = String(classNameMap.get(classCode) || '').trim();
+    const typeName = String(typeNameMap.get(`${classCode}-${typeCode}`) || '').trim();
+    if (!className && !typeName) return;
+
+    const normalizedClass = normalizeFiscalText(className);
+    const normalizedType = normalizeFiscalText(typeName);
+    const normalizedItem = normalizeFiscalText(itemName);
+    if (!normalizedItem) return;
+
+    const signature = `${normalizedClass}|${normalizedType}|${normalizedItem}`;
+    if (seen.has(signature)) return;
+    seen.add(signature);
+
+    references.push({
+      className,
+      typeName,
+      itemName,
+      normalizedClass,
+      normalizedType,
+      normalizedItem
+    });
+  });
+
+  return references;
+};
+
+const inferFiscalLevelsByReference = (item: FiscalUsageItem, lineItemRefs: FiscalLineItemReference[]): FiscalUsageItem => {
+  if (!lineItemRefs.length) return item;
+
+  const hasClass = Boolean(item.className.trim());
+  const hasType = Boolean(item.typeName.trim());
+  if (hasClass && hasType) return item;
+
+  const sourceName = item.itemName.trim();
+  if (!sourceName) return item;
+  if (isIgnoredFiscalDetailLine(sourceName)) return item;
+
+  const normalizedSource = normalizeFiscalText(sourceName);
+  if (!normalizedSource) return item;
+
+  const sourceSegments = sourceName
+    .split(/[-—－_/／]+/)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (sourceSegments.length >= 2) {
+    const normalizedClassPart = normalizeFiscalText(sourceSegments[0]);
+    const normalizedTypePart = normalizeFiscalText(sourceSegments[1]);
+    const segmentedMatch = lineItemRefs.find((ref) => (
+      (!normalizedClassPart || ref.normalizedClass.includes(normalizedClassPart) || normalizedClassPart.includes(ref.normalizedClass))
+      && (!normalizedTypePart || ref.normalizedType.includes(normalizedTypePart) || normalizedTypePart.includes(ref.normalizedType))
+    ));
+
+    if (segmentedMatch) {
+      const inferredItemName = sourceSegments.length >= 3
+        ? sourceSegments.slice(2).join('-')
+        : item.itemName;
+      return {
+        ...item,
+        className: hasClass ? item.className : segmentedMatch.className,
+        typeName: hasType ? item.typeName : segmentedMatch.typeName,
+        itemName: inferredItemName || segmentedMatch.itemName
+      };
+    }
+  }
+
+  let bestRef: FiscalLineItemReference | null = null;
+  let bestScore = 0;
+
+  lineItemRefs.forEach((ref) => {
+    const hasItem = Boolean(ref.normalizedItem) && normalizedSource.includes(ref.normalizedItem);
+    const hasClassToken = Boolean(ref.normalizedClass) && normalizedSource.includes(ref.normalizedClass);
+    const hasTypeToken = Boolean(ref.normalizedType) && normalizedSource.includes(ref.normalizedType);
+    if (!hasItem && !hasClassToken && !hasTypeToken) return;
+
+    let score = 0;
+    if (hasItem) score += 100;
+    if (hasClassToken) score += 70;
+    if (hasTypeToken) score += 90;
+    if (normalizedSource === ref.normalizedItem) score += 120;
+    if (hasItem && hasTypeToken) score += 80;
+    if (hasItem && hasClassToken) score += 40;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestRef = ref;
+    }
+  });
+
+  if (!bestRef || bestScore < 160) return item;
+
+  return {
+    ...item,
+    className: hasClass ? item.className : bestRef.className,
+    typeName: hasType ? item.typeName : bestRef.typeName,
+    itemName: normalizedSource.includes(bestRef.normalizedItem) ? bestRef.itemName : item.itemName
+  };
+};
 
 const shouldStopFiscalParsing = (line: string) => {
   const trimmed = line.replace(/\s+/g, '').trim();
@@ -225,6 +408,7 @@ const parseSingleFiscalUsageItem = (line: string, index: number): FiscalUsageIte
   const cleaned = stripFiscalLinePrefix(line);
   if (!cleaned) return null;
   if (/^财政拨款支出主要内容如下[:：]?$/.test(cleaned)) return null;
+  if (isIgnoredFiscalDetailLine(cleaned)) return null;
 
   let detailPart = cleaned;
   let purpose = '';
@@ -254,8 +438,10 @@ const parseSingleFiscalUsageItem = (line: string, index: number): FiscalUsageIte
     .replace(/科目/g, '')
     .replace(/\s+/g, ' ')
     .trim();
+  if (!normalizedDetail || isIgnoredFiscalDetailLine(normalizedDetail)) return null;
 
   const { className, typeName, itemName } = parseFiscalLevels(normalizedDetail);
+  if (isIgnoredFiscalDetailLine([className, typeName, itemName].join(''))) return null;
 
   return {
     id: `fiscal-${index}-${Math.random().toString(36).slice(2, 7)}`,
@@ -387,13 +573,20 @@ const mergeBrokenFiscalItems = (items: FiscalUsageItem[]): FiscalUsageItem[] => 
   return merged;
 };
 
-const parseFiscalUsageItems = (content: string): FiscalUsageItem[] => {
+const postProcessFiscalItems = (items: FiscalUsageItem[], options?: FiscalUsageParseOptions): FiscalUsageItem[] => {
+  const refs = options?.lineItemRefs || [];
+  return items
+    .map((item) => inferFiscalLevelsByReference(item, refs))
+    .filter((item) => !isIgnoredFiscalDetailLine([item.className, item.typeName, item.itemName].join('')));
+};
+
+const parseFiscalUsageItems = (content: string, options?: FiscalUsageParseOptions): FiscalUsageItem[] => {
   const numberedEntries = splitFiscalEntriesByNumber(content);
   if (numberedEntries.length > 0) {
     const parsed = numberedEntries
       .map((entry, index) => parseSingleFiscalUsageItem(entry, index))
       .filter((item): item is FiscalUsageItem => Boolean(item));
-    return mergeBrokenFiscalItems(parsed);
+    return postProcessFiscalItems(mergeBrokenFiscalItems(parsed), options);
   }
 
   const lines = content
@@ -419,7 +612,7 @@ const parseFiscalUsageItems = (content: string): FiscalUsageItem[] => {
     items.push(parsed);
   });
 
-  return mergeBrokenFiscalItems(items);
+  return postProcessFiscalItems(mergeBrokenFiscalItems(items), options);
 };
 
 const serializeFiscalUsageItems = (items: FiscalUsageItem[]): string =>
@@ -487,6 +680,8 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   const [selectedType, setSelectedType] = useState<ReportType>('BUDGET');
   const [parseModalOpen, setParseModalOpen] = useState(false);
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
+  const [focusPreviewBatchId, setFocusPreviewBatchId] = useState<string | null>(null);
 
   const [expandedCategory, setExpandedCategory] = useState<NormalCategoryKey>('FUNCTION');
   const [showFiscalRawEditor, setShowFiscalRawEditor] = useState(false);
@@ -498,8 +693,14 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   const [savedAtMap, setSavedAtMap] = useState<Record<string, string>>({});
   const [globalMessage, setGlobalMessage] = useState<string | null>(null);
   const [fiscalItemsMap, setFiscalItemsMap] = useState<Record<string, FiscalUsageItem[]>>({});
+  const [archiveLineItems, setArchiveLineItems] = useState<ArchiveLineItem[]>([]);
 
   const fiscalSectionRef = useRef<HTMLDivElement | null>(null);
+
+  const fiscalLineItemRefs = useMemo(
+    () => buildFiscalLineItemReferences(archiveLineItems),
+    [archiveLineItems]
+  );
 
   useEffect(() => {
     setArchiveYear(year);
@@ -540,14 +741,14 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
       const key = buildDraftKey(selectedType, FISCAL_CATEGORY);
       if (dirtyMap[key]) return prev;
 
-      const parsed = parseFiscalUsageItems(drafts[key] ?? '');
+      const parsed = parseFiscalUsageItems(drafts[key] ?? '', { lineItemRefs: fiscalLineItemRefs });
       const prevSerialized = serializeFiscalUsageItems(prev[key] ?? []);
       const nextSerialized = serializeFiscalUsageItems(parsed);
 
       if (prevSerialized === nextSerialized) return prev;
       return { ...prev, [key]: parsed };
     });
-  }, [drafts, dirtyMap, selectedType]);
+  }, [drafts, dirtyMap, selectedType, fiscalLineItemRefs]);
 
   const hasUnsavedChanges = useMemo(
     () => CATEGORIES.some((category) => dirtyMap[buildDraftKey(selectedType, category)]),
@@ -593,10 +794,12 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
       const data = await response.json();
       setReports(data.reports || []);
       setTextContent(data.text_content || []);
+      setArchiveLineItems(Array.isArray(data.line_items) ? data.line_items : []);
     } catch (error) {
       console.error('Failed to load archives:', error);
       setReports([]);
       setTextContent([]);
+      setArchiveLineItems([]);
     } finally {
       setLoading(false);
     }
@@ -665,6 +868,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     setSaveErrorMap({});
     setSavedAtMap({});
     setFiscalItemsMap({});
+    setArchiveLineItems([]);
     setShowFiscalRawEditor(false);
     setGlobalMessage(null);
   };
@@ -677,6 +881,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     if (hasUnsavedChanges) {
       resetDraftStateForYearSwitch();
     }
+    setFocusPreviewBatchId(null);
     updateArchiveYear(nextYear);
   };
 
@@ -807,7 +1012,8 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
       if (uploadYear !== archiveYear) {
         updateArchiveYear(uploadYear);
       }
-      alert('上传成功，请点击“提取数据”并入库到年度字段。');
+      setPreviewRefreshKey((value) => value + 1);
+      alert('上传成功，请点击“提取数据”创建解析确认批次。');
     } catch (error: unknown) {
       console.error('Upload error:', error);
       const message = error instanceof Error ? error.message : String(error);
@@ -886,7 +1092,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   const handleParseSave = async (items: any[]) => {
     if (!selectedReportId) return;
 
-    const response = await fetch('/api/admin/archives/save-budget-facts', {
+    const response = await fetch('/api/admin/archives/preview', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -901,18 +1107,19 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
 
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data.message || '数据入库失败');
+      throw new Error(data.message || '创建预览批次失败');
     }
 
     const data = await response.json();
-    onFactsSaved?.();
-
-    const autoMapped = Number(data.auto_mapped_count || 0);
-    const mapped = Number(data.mapped_count || 0);
-    const upserted = Number(data.upserted_count || 0);
-    const unmatched = Number(data.unmatched_count || 0);
-
-    alert(`入库完成：自动识别 ${autoMapped} 项，总识别 ${mapped} 项，写入 ${upserted} 项，未匹配 ${unmatched} 项。`);
+    setPreviewRefreshKey((value) => value + 1);
+    setFocusPreviewBatchId(data.batch_id || null);
+    const ocrReason = String(data?.ocr_summary?.reason || '').trim();
+    const ocrExecuted = Boolean(data?.ocr_summary?.executed);
+    const ocrText = ocrReason
+      ? `OCR：${ocrExecuted ? '已执行' : '未执行'}（${ocrReason}）`
+      : 'OCR：状态未知';
+    setGlobalMessage(`已创建确认批次：${data.batch_id || '-'}，${ocrText}。请在下方完成复核后提交入库。`);
+    window.setTimeout(() => setGlobalMessage(null), 3500);
   };
 
   const handleDraftChange = (category: CategoryKey, value: string) => {
@@ -922,7 +1129,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     setSaveErrorMap((prev) => ({ ...prev, [key]: undefined }));
 
     if (category === FISCAL_CATEGORY) {
-      setFiscalItemsMap((prev) => ({ ...prev, [key]: parseFiscalUsageItems(value) }));
+      setFiscalItemsMap((prev) => ({ ...prev, [key]: parseFiscalUsageItems(value, { lineItemRefs: fiscalLineItemRefs }) }));
     }
   };
 
@@ -992,7 +1199,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     setFiscalItemsMap((prev) => {
       const key = buildDraftKey(selectedType, FISCAL_CATEGORY);
       const existing = textContent.find((item) => item.category === FISCAL_CATEGORY && item.report_type === selectedType);
-      return { ...prev, [key]: parseFiscalUsageItems(existing?.content_text ?? '') };
+      return { ...prev, [key]: parseFiscalUsageItems(existing?.content_text ?? '', { lineItemRefs: fiscalLineItemRefs }) };
     });
 
     setShowFiscalRawEditor(false);
@@ -1103,22 +1310,26 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
 
         <div className="flex gap-2">
           <button
-            onClick={() => setSelectedType('BUDGET')}
-            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-              selectedType === 'BUDGET'
+            onClick={() => {
+              setSelectedType('BUDGET');
+              setFocusPreviewBatchId(null);
+            }}
+            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${selectedType === 'BUDGET'
                 ? 'bg-brand-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
+              }`}
           >
             预算报告
           </button>
           <button
-            onClick={() => setSelectedType('FINAL')}
-            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${
-              selectedType === 'FINAL'
+            onClick={() => {
+              setSelectedType('FINAL');
+              setFocusPreviewBatchId(null);
+            }}
+            className={`px-3 py-2 text-sm font-medium rounded-lg transition-colors ${selectedType === 'FINAL'
                 ? 'bg-brand-600 text-white'
                 : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-            }`}
+              }`}
           >
             决算报告
           </button>
@@ -1172,7 +1383,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
                   }}
                 >
                   <Download className="w-3 h-3" />
-                  提取数据
+                  提取并预览
                 </button>
                 <span className="text-xs text-slate-400">{new Date(currentReport.created_at).toLocaleDateString('zh-CN')}</span>
               </div>
@@ -1183,6 +1394,22 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
             </div>
           )}
         </div>
+
+        <ArchivePreviewPanel
+          unitId={unitId}
+          year={archiveYear}
+          reports={reports}
+          refreshKey={previewRefreshKey}
+          focusBatchId={focusPreviewBatchId}
+          onCommitted={() => {
+            onFactsSaved?.();
+            setPreviewRefreshKey((value) => value + 1);
+          }}
+          onReportDeleted={() => {
+            void loadArchives();
+            setPreviewRefreshKey((value) => value + 1);
+          }}
+        />
 
         <div className="border border-slate-200 rounded-xl bg-white p-4 space-y-4 h-fit">
           <div className="flex items-start justify-between gap-3">
@@ -1214,11 +1441,10 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
                     key={category}
                     type="button"
                     onClick={() => setExpandedCategory(category)}
-                    className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${
-                      activeCategory === category
+                    className={`w-full text-left px-3 py-2 rounded-lg border transition-colors ${activeCategory === category
                         ? 'bg-brand-50 text-brand-700 border-brand-200'
                         : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-sm font-medium truncate">{CATEGORY_LABELS[category]}</span>
@@ -1457,5 +1683,3 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
 };
 
 export default ArchivePanel;
-
-

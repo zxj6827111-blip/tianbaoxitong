@@ -110,4 +110,27 @@ describe('historyFactAutoExtractor', () => {
     expect(facts.three_public_reception).toBe(0.95);
     expect(facts.operation_fund).toBe(229.43);
   });
+
+  it('extracts operation fund and preserves column positions in sparse three-public layout', () => {
+    const threeRows = [
+      ['\u7f16\u5236\u90e8\u95e8\uff1a\u4e0a\u6d77\u5e02\u666e\u9640\u533a\u4eba\u6c11\u653f\u5e9c\u529e\u516c\u5ba4', '\u5355\u4f4d:\u4e07\u5143', '', ''],
+      ['\u201c\u4e09\u516c\u201d\u7ecf\u8d39\u9884\u7b97\u6570', '', '', ''],
+      ['\u673a\u5173\u8fd0\u884c\u7ecf\u8d39\u9884\u7b97', '', '', ''],
+      ['\u6570', '', '', ''],
+      ['\u5408\u8ba1', '\u56e0\u516c\u51fa\u56fd(\u5883)\u8d39', '\u516c\u52a1\u63a5\u5f85\u8d39', ''],
+      ['\u516c\u52a1\u7528\u8f66\u8d2d\u7f6e\u53ca\u8fd0\u884c\u8d39', '', '', ''],
+      ['\u5c0f\u8ba1', '\u8d2d\u7f6e\u8d39', '\u8fd0\u884c\u8d39', ''],
+      ['867.50', '839.00', '28.50', '', '', '', '213.28']
+    ];
+
+    const facts = extractHistoryFactsFromTableData([
+      { table_key: 'three_public', data_json: threeRows }
+    ]);
+
+    expect(facts.three_public_total).toBe(867.5);
+    expect(facts.three_public_outbound).toBe(839);
+    expect(facts.three_public_reception).toBe(28.5);
+    expect(facts.three_public_vehicle_total).toBe(0);
+    expect(facts.operation_fund).toBe(213.28);
+  });
 });

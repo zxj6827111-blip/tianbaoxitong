@@ -1,4 +1,4 @@
-import React from 'react';
+ï»¿import React from 'react';
 import { Loader2 } from 'lucide-react';
 
 interface LoadingProps {
@@ -21,7 +21,7 @@ export const Loading: React.FC<LoadingProps> = ({ fullScreen = false, text = 'åŠ
   );
 };
 
-export const Spinner = ({ size = 'md', className = '' }: { size?: 'sm' | 'md' | 'lg', className?: string }) => {
+export const Spinner = ({ size = 'md', className = '' }: { size?: 'sm' | 'md' | 'lg'; className?: string }) => {
   const sizeClasses = {
     sm: 'w-4 h-4',
     md: 'w-6 h-6',
@@ -30,3 +30,4 @@ export const Spinner = ({ size = 'md', className = '' }: { size?: 'sm' | 'md' | 
 
   return <Loader2 className={`${sizeClasses[size]} text-brand-600 animate-spin ${className}`} />;
 };
+
