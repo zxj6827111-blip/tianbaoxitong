@@ -2,6 +2,7 @@ const db = require('../db');
 const { fetchLatestSuggestions } = require('../repositories/suggestionRepository');
 const { fetchReasonThreshold, getLineItems } = require('./lineItemsService');
 const { getUploadFilePath } = require('./uploadStorage');
+const { sanitizeManualTextByKey } = require('./manualTextSanitizer');
 
 const toWanyuanFromYuan = (value) => {
   const parsed = Number(value);
@@ -285,9 +286,10 @@ const buildFinalValues = async (draftId) => {
   }
 
   for (const input of payload.manualInputs) {
+    const sanitizedValueText = sanitizeManualTextByKey(input.key, input.value_text);
     values.manual_inputs[input.key] = {
       value_json: input.value_json ?? null,
-      value_text: input.value_text ?? null,
+      value_text: sanitizedValueText ?? null,
       value_numeric: input.value_numeric !== null && input.value_numeric !== undefined
         ? Number(input.value_numeric)
         : null

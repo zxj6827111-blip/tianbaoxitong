@@ -9,6 +9,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { parseBudgetWorkbook } = require('../services/excelParser');
 const { BUDGET_MAPPING, BUDGET_MAPPING_DEPARTMENT } = require('../services/budgetMapping');
 const { ensureUploadDir, getUploadFilePath } = require('../services/uploadStorage');
+const { sanitizeManualTextByKey } = require('../services/manualTextSanitizer');
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage() });
@@ -234,13 +235,14 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     // === Save Extracted Texts to Manual Inputs ===
     if (parseResult.texts && parseResult.texts.length > 0) {
       for (const textItem of parseResult.texts) {
+        const normalizedText = sanitizeManualTextByKey(textItem.key, textItem.value_text);
         // Upsert manual inputs
         await client.query(
           `INSERT INTO manual_inputs (draft_id, key, value_text, updated_by)
            VALUES ($1, $2, $3, $4)
            ON CONFLICT (draft_id, key) 
            DO UPDATE SET value_text = EXCLUDED.value_text, updated_at = now()`,
-          [draftId, textItem.key, textItem.value_text, req.user.id]
+          [draftId, textItem.key, normalizedText || null, req.user.id]
         );
       }
     }
@@ -271,7 +273,8 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
           [departmentId, prevYear, category]
         );
         const historyText = historyResult.rows[0]?.content_text;
-        if (!historyText) continue;
+        const normalizedHistoryText = sanitizeManualTextByKey(key, historyText);
+        if (!normalizedHistoryText) continue;
 
         await client.query(
           `INSERT INTO manual_inputs (draft_id, key, value_text, evidence, updated_by)
@@ -287,7 +290,7 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
           [
             draftId,
             key,
-            historyText,
+            normalizedHistoryText,
             JSON.stringify({ source: 'archive_pdf', year: prevYear, category }),
             req.user.id
           ]

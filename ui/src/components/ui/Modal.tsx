@@ -1,4 +1,4 @@
-import React, { ReactNode } from 'react';
+﻿import React, { ReactNode } from 'react';
 
 interface ModalProps {
   isOpen: boolean;
@@ -36,6 +36,7 @@ export const Modal: React.FC<ModalProps> = ({
             <button
               onClick={onClose}
               className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+              aria-label="关闭"
             >
               ×
             </button>
@@ -47,3 +48,4 @@ export const Modal: React.FC<ModalProps> = ({
     </div>
   );
 };
+

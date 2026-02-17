@@ -20,6 +20,7 @@ const {
   getPreviewPdfPath,
   getPreviewExcelPath
 } = require('../services/reportService');
+const { sanitizeManualInputRow, sanitizeManualTextByKey } = require('../services/manualTextSanitizer');
 const { createSuggestion, listDraftSuggestions } = require('../repositories/suggestionRepository');
 const { getUploadFilePath } = require('../services/uploadStorage');
 
@@ -641,6 +642,8 @@ router.get('/:id', requireAuth, async (req, res, next) => {
       [draft.id]
     );
 
+    const sanitizedManualInputs = manualInputsResult.rows.map(sanitizeManualInputRow);
+
     return res.json({
       draft,
       facts_budget: {
@@ -649,7 +652,7 @@ router.get('/:id', requireAuth, async (req, res, next) => {
         page,
         pageSize
       },
-      manual_inputs: manualInputsResult.rows
+      manual_inputs: sanitizedManualInputs
     });
   } catch (error) {
     return next(error);
@@ -1005,6 +1008,8 @@ router.patch('/:id/manual-inputs', requireAuth, async (req, res, next) => {
         });
       }
 
+      const sanitizedValueText = sanitizeManualTextByKey(key, value_text);
+
       await client.query(
         `INSERT INTO manual_inputs (draft_id, key, value_text, value_numeric, updated_by, updated_at)
          VALUES ($1, $2, $3, $4, $5, now())
@@ -1017,7 +1022,7 @@ router.patch('/:id/manual-inputs', requireAuth, async (req, res, next) => {
         [
           draft.id,
           key,
-          value_text || null,
+          sanitizedValueText || null,
           value_numeric !== undefined && value_numeric !== null && value_numeric !== '' ? Number(value_numeric) : null,
           req.user.id
         ]
@@ -1053,7 +1058,7 @@ router.patch('/:id/manual-inputs', requireAuth, async (req, res, next) => {
     return res.json({
       draft_id: draft.id,
       draft: updatedDraft,
-      manual_inputs: manualInputsResult.rows
+      manual_inputs: manualInputsResult.rows.map(sanitizeManualInputRow)
     });
   } catch (error) {
     try {
@@ -1108,8 +1113,10 @@ router.get('/:id/history-text', requireAuth, async (req, res, next) => {
       [departmentId, prevYear, category]
     );
 
+    const contentText = sanitizeManualTextByKey(key, textResult.rows[0]?.content_text);
+
     return res.json({
-      content_text: textResult.rows[0]?.content_text || null
+      content_text: contentText || null
     });
   } catch (error) {
     return next(error);
