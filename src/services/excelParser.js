@@ -2,7 +2,7 @@
 const XLSX = require('xlsx');
 const path = require('path');
 const { AppError } = require('../errors');
-const { BUDGET_MAPPING, BUDGET_MAPPING_DEPARTMENT } = require('./budgetMapping');
+const { BUDGET_MAPPING } = require('./budgetMapping');
 
 const normalizeCellText = (value) => {
   if (value === null || value === undefined) {
@@ -278,8 +278,14 @@ const parseWithSheetJS = (filePath, mapping) => {
   const parsedCellsMap = new Map();
   const facts = [];
   const texts = [];
+  const resolvedKeys = new Set();
 
   for (const rule of mapping) {
+    // Skip if this key was already resolved by a previous rule variant
+    if (resolvedKeys.has(rule.key) && rule.type !== 'text') {
+      continue;
+    }
+
     let sheet = workbook.Sheets[rule.sheet];
     let sheetName = rule.sheet;
     if (!sheet && rule.aliases) {
@@ -351,8 +357,8 @@ const parseWithSheetJS = (filePath, mapping) => {
       });
     }
 
-    const targetRow = rowAnchorCell.row - 1;
-    const targetCol = colAnchorCell.col - 1;
+    const targetRow = rowAnchorCell.row - 1 + (rule.rowOffset || 0);
+    const targetCol = colAnchorCell.col - 1 + (rule.colOffset || 0);
     const targetAddr = XLSX.utils.encode_cell({ r: targetRow, c: targetCol });
     const rawTargetCell = sheet[targetAddr];
 
@@ -387,7 +393,7 @@ const parseWithSheetJS = (filePath, mapping) => {
       for (const header of rule.sumCols) {
         const colAnchor = findSheetJSCellByText(sheet, header);
         if (!colAnchor) continue;
-        const addr = XLSX.utils.encode_cell({ r: rowAnchorCell.row - 1, c: colAnchor.col - 1 });
+        const addr = XLSX.utils.encode_cell({ r: targetRow, c: colAnchor.col - 1 });
         const cell = sheet[addr];
         const cellValue = normalizeNumber(cell ? cell.v : null, cell ? cell.z : '');
         if (cellValue !== null && cellValue !== undefined) sum += cellValue;
@@ -441,6 +447,7 @@ const parseWithSheetJS = (filePath, mapping) => {
       value_numeric: normalizedNumber,
       evidence_cells: [targetEntry, rowAnchorEntry, colAnchorEntry, ...extraEvidence]
     });
+    resolvedKeys.add(rule.key);
   }
 
   const lineItemResult = parseLineItemsSheetJS(workbook);
@@ -708,8 +715,12 @@ const parseLineItems = (workbook) => {
 
 const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
   const ext = path.extname(filePath || '').toLowerCase();
-  if (ext === '.xls' || mapping === BUDGET_MAPPING_DEPARTMENT) {
-    return parseWithSheetJS(filePath, mapping);
+  if (ext === '.xls') {
+    throw new AppError({
+      statusCode: 400,
+      code: 'INVALID_FILE_TYPE',
+      message: 'Legacy .xls files are not supported. Please upload .xlsx files.'
+    });
   }
   const workbook = new ExcelJS.Workbook();
   try {
@@ -718,8 +729,14 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
     const parsedCellsMap = new Map();
     const facts = [];
     const texts = [];
+    const resolvedKeys = new Set();
 
     for (const rule of mapping) {
+      // Skip if this key was already resolved by a previous rule variant
+      if (resolvedKeys.has(rule.key) && rule.type !== 'text') {
+        continue;
+      }
+
       // 1. Resolve Sheet (handling aliases)
       let sheet = workbook.getWorksheet(rule.sheet);
       if (!sheet && rule.aliases) {
@@ -780,7 +797,9 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
         });
       }
 
-      const targetCell = sheet.getCell(rowAnchorCell.row, colAnchorCell.col);
+      const targetRow = rowAnchorCell.row + (rule.rowOffset || 0);
+      const targetCol = colAnchorCell.col + (rule.colOffset || 0);
+      const targetCell = sheet.getCell(targetRow, targetCol);
       const anchorText = `row:${rule.rowAnchor}|col:${rule.colAnchor}`;
 
       const targetEntry = collectParsedCell(parsedCellsMap, sheet.name, targetCell, anchorText);
@@ -793,7 +812,7 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
       if ((normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumCols)) {
         const { sum, evidenceCells } = sumFromCols({
           sheet,
-          row: rowAnchorCell.row,
+          row: targetRow,
           colHeaders: rule.sumCols,
           parsedCellsMap,
           sheetName: sheet.name
@@ -831,6 +850,7 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
         value_numeric: normalizedNumber,
         evidence_cells: [targetEntry, rowAnchorEntry, colAnchorEntry, ...extraEvidence]
       });
+      resolvedKeys.add(rule.key);
     }
 
     const lineItemResult = parseLineItems(workbook);
@@ -844,7 +864,11 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
     };
   } catch (error) {
     if (error.message && error.message.includes('Cannot merge already merged cells')) {
-      return parseWithSheetJS(filePath, mapping);
+      throw new AppError({
+        statusCode: 422,
+        code: 'UNSUPPORTED_WORKBOOK_LAYOUT',
+        message: 'Workbook contains unsupported merged-cell layout'
+      });
     }
     throw error;
   }

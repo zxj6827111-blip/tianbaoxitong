@@ -1,4 +1,6 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿# [DEPRECATED] This script is no longer used by the application.
+# Logic has been migrated to src/services/excelFiller.js using ExcelJS.
+$ErrorActionPreference = 'Stop'
 
 $payloadBase64 = $env:PAYLOAD_BASE64
 if ([string]::IsNullOrWhiteSpace($payloadBase64)) {

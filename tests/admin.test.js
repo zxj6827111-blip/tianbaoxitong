@@ -190,4 +190,20 @@ describe('admin management endpoints', () => {
     expect(filterResponse.status).toBe(200);
     expect(filterResponse.body.units.length).toBe(2);
   });
+
+  it('rejects invalid reorder type on admin org endpoint', async () => {
+    await seedAdminUser();
+
+    const token = await login();
+    const response = await request(app)
+      .post('/api/admin/org/reorder')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        type: 'invalid-type',
+        items: [{ id: '00000000-0000-0000-0000-000000000000', sort_order: 1 }]
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe('VALIDATION_ERROR');
+  });
 });

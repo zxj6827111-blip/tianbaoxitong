@@ -40,6 +40,7 @@ interface BudgetExplanationComposerProps {
     key: InputFieldKey;
     nonce: number;
   } | null;
+  unitName?: string;
 }
 
 const DRAFT_LOAD_CACHE_TTL_MS = 10 * 1000;
@@ -120,6 +121,25 @@ const ensureSentence = (text: string) => {
   return `${clean}。`;
 };
 
+const normalizeUnitName = (raw: string | null | undefined) => {
+  if (!raw) return '';
+  let text = String(raw).trim();
+  text = text.replace(/预算单位[:：]?/, '').trim();
+  text = text.replace(/（?单位）?主要职能.*$/, '').trim();
+  text = text.replace(/（?部门）?主要职能.*$/, '').trim();
+  text = text.replace(/主要职能.*$/, '').trim();
+  text = text.replace(/[（(](部门|单位)[）)]$/g, '').trim();
+  if (/^\d+$/.test(text)) return '';
+  return text;
+};
+
+const extractUnitNameFromMainFunctions = (raw: string | null | undefined) => {
+  const text = String(raw || '').trim().replace(/\s+/g, '');
+  if (!text) return '';
+  const matched = text.match(/^([^，。；;：:\n]{4,80}?)(?:是|负责|主要)/);
+  return matched?.[1] || '';
+};
+
 const buildPreviewLine = (item: LineItem, index: number) => {
   const reasonText = (item.reason_text || '').trim();
   const label = item.item_label || item.item_key;
@@ -144,7 +164,8 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
   onLineItemStatsChange,
   onDraftUpdated,
   onCompletionChange,
-  focusRequest
+  focusRequest,
+  unitName
 }) => {
   const [overviewText, setOverviewText] = useState('');
   const [changeReason, setChangeReason] = useState('');
@@ -266,29 +287,59 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
     return `${header}\n\n财政拨款支出主要内容如下：\n${lines.join('\n')}`;
   }, [overviewText, lineItems]);
 
+  // Calculate fiscal trend for label
+  const fiscalTrend = useMemo(() => {
+    const fiscalExpenditure = diffItems.find(item => item.key === 'fiscal_grant_expenditure_total');
+    if (!fiscalExpenditure) return '增加（减少）';
+
+    const current = toFiniteOrNull(fiscalExpenditure.current_value);
+    const previous = toFiniteOrNull(fiscalExpenditure.previous_value);
+    if (current === null || previous === null) return '增加（减少）';
+
+    const diff = current - previous;
+
+    if (Math.abs(diff) < 0.005) return '增加（减少）';
+    return diff > 0 ? '增加' : '减少';
+  }, [diffItems]);
+
   const buildOverviewFromFacts = () => {
     const prevYear = draftYear - 1;
     const revenue = diffMap.get('budget_revenue_total');
     const expenditure = diffMap.get('budget_expenditure_total');
     const fiscalRevenue = diffMap.get('fiscal_grant_revenue_total');
     const fiscalExpenditure = diffMap.get('fiscal_grant_expenditure_total');
-    const basic = diffMap.get('budget_expenditure_basic');
-    const project = diffMap.get('budget_expenditure_project');
+    const businessRevenue = diffMap.get('budget_revenue_business');
+    const operationRevenue = diffMap.get('budget_revenue_operation');
+    const otherRevenue = diffMap.get('budget_revenue_other');
+    const fiscalGeneral = diffMap.get('fiscal_grant_expenditure_general');
+    const fiscalGovFund = diffMap.get('fiscal_grant_expenditure_gov_fund');
+    const fiscalCapital = diffMap.get('fiscal_grant_expenditure_capital');
 
     const revenueCurrent = toWanFromYuan(toFiniteOrNull(revenue?.current_value));
-    const revenuePrev = toWanFromYuan(toFiniteOrNull(revenue?.previous_value));
-    const expenditureCurrent = toWanFromYuan(toFiniteOrNull(expenditure?.current_value));
-    const expenditurePrev = toWanFromYuan(toFiniteOrNull(expenditure?.previous_value));
     const fiscalRevenueCurrent = toWanFromYuan(toFiniteOrNull(fiscalRevenue?.current_value));
     const fiscalRevenuePrev = toWanFromYuan(toFiniteOrNull(fiscalRevenue?.previous_value));
+
+    const businessRevenueCurrent = toWanFromYuan(toFiniteOrNull(businessRevenue?.current_value));
+    const operationRevenueCurrent = toWanFromYuan(toFiniteOrNull(operationRevenue?.current_value));
+    const otherRevenueCurrent = toWanFromYuan(toFiniteOrNull(otherRevenue?.current_value));
+
+    const expenditureCurrent = toWanFromYuan(toFiniteOrNull(expenditure?.current_value));
     const fiscalExpenditureCurrent = toWanFromYuan(toFiniteOrNull(fiscalExpenditure?.current_value));
     const fiscalExpenditurePrev = toWanFromYuan(toFiniteOrNull(fiscalExpenditure?.previous_value));
-    const basicCurrent = toWanFromYuan(toFiniteOrNull(basic?.current_value));
-    const projectCurrent = toWanFromYuan(toFiniteOrNull(project?.current_value));
 
-    const reason = changeReason.trim() || '项目安排调整';
+    const fiscalGeneralCurrent = toWanFromYuan(toFiniteOrNull(fiscalGeneral?.current_value));
+    const fiscalGeneralPrev = toWanFromYuan(toFiniteOrNull(fiscalGeneral?.previous_value));
+    const fiscalGovFundCurrent = toWanFromYuan(toFiniteOrNull(fiscalGovFund?.current_value));
+    const fiscalGovFundPrev = toWanFromYuan(toFiniteOrNull(fiscalGovFund?.previous_value));
+    const fiscalCapitalCurrent = toWanFromYuan(toFiniteOrNull(fiscalCapital?.current_value));
+    const fiscalCapitalPrev = toWanFromYuan(toFiniteOrNull(fiscalCapital?.previous_value));
 
-    return `${draftYear}年，收入预算${formatWan(revenueCurrent)}万元，其中：财政拨款收入${formatWan(fiscalRevenueCurrent)}万元${compareText(fiscalRevenueCurrent, fiscalRevenuePrev, prevYear)}。支出预算${formatWan(expenditureCurrent)}万元，其中：财政拨款支出预算${formatWan(fiscalExpenditureCurrent)}万元${compareText(fiscalExpenditureCurrent, fiscalExpenditurePrev, prevYear)}。财政拨款支出预算中，基本支出${formatWan(basicCurrent)}万元，项目支出${formatWan(projectCurrent)}万元${compareText(expenditureCurrent, expenditurePrev, prevYear)}。财政拨款收入支出增加（减少）的主要原因是${ensureSentence(reason)}`;
+    const manualUnitName = normalizeUnitName(initialInputs.find((item) => item.key === 'unit_full_name')?.value_text || '');
+    const fromMainFunctions = normalizeUnitName(extractUnitNameFromMainFunctions(initialInputs.find((item) => item.key === 'main_functions')?.value_text || ''));
+    const draftUnitName = normalizeUnitName(unitName || '');
+    const name = manualUnitName || fromMainFunctions || draftUnitName || '本单位';
+
+    return `${draftYear}年，${name}收入预算${formatWan(revenueCurrent)}万元，其中：财政拨款收入${formatWan(fiscalRevenueCurrent)}万元${compareText(fiscalRevenueCurrent, fiscalRevenuePrev, prevYear)}；事业收入${formatWan(businessRevenueCurrent)}万元；事业单位经营收入${formatWan(operationRevenueCurrent)}万元；其他收入${formatWan(otherRevenueCurrent)}万元。\n    支出预算${formatWan(expenditureCurrent)}万元，其中：财政拨款支出预算${formatWan(fiscalExpenditureCurrent)}万元${compareText(fiscalExpenditureCurrent, fiscalExpenditurePrev, prevYear)}。财政拨款支出预算中，一般公共预算拨款支出预算${formatWan(fiscalGeneralCurrent)}万元${compareText(fiscalGeneralCurrent, fiscalGeneralPrev, prevYear)}；政府性基金拨款支出预算${formatWan(fiscalGovFundCurrent)}万元${compareText(fiscalGovFundCurrent, fiscalGovFundPrev, prevYear)}；国有资本经营预算拨款支出预算${formatWan(fiscalCapitalCurrent)}万元${compareText(fiscalCapitalCurrent, fiscalCapitalPrev, prevYear)}。`;
   };
 
   const handleGenerateOverview = () => {
@@ -431,7 +482,7 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <label className="block text-sm font-medium text-slate-700">财政拨款收入支出增减主要原因</label>
+            <label className="block text-sm font-medium text-slate-700">财政拨款收入支出{fiscalTrend}的主要原因是</label>
             <button
               type="button"
               onClick={() => void handleFillHistory('budget_change_reason')}

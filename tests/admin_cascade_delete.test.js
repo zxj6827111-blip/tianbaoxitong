@@ -1,7 +1,10 @@
+process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+
 const request = require('supertest');
 const app = require('../src/app');
 const db = require('../src/db');
 const { hashPassword } = require('../src/auth/password');
+const { migrateUp } = require('./helpers/migrations');
 
 const createDepartmentAndUnit = async ({ unitCode = 'U_TEST', departmentCode = 'D_TEST' } = {}) => {
   const department = await db.query(
@@ -23,12 +26,13 @@ const createDepartmentAndUnit = async ({ unitCode = 'U_TEST', departmentCode = '
 };
 
 const seedUserWithRole = async ({ roleName, unitId, deptId } = {}) => {
+  const email = `${roleName}_test_${Date.now()}@example.com`;
   const passwordHash = await hashPassword('secret');
   const user = await db.query(
     `INSERT INTO users (email, password_hash, display_name, unit_id, department_id)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id`,
-    [`${roleName}_test_${Date.now()}@example.com`, passwordHash, `${roleName} user`, unitId, deptId]
+    [email, passwordHash, `${roleName} user`, unitId, deptId]
   );
 
   const role = await db.query('SELECT id FROM roles WHERE name = $1', [roleName]);
@@ -38,7 +42,7 @@ const seedUserWithRole = async ({ roleName, unitId, deptId } = {}) => {
     [user.rows[0].id, role.rows[0].id]
   );
 
-  return { email: `${roleName}_test_${Date.now()}@example.com` };
+  return { email };
 };
 
 const login = async (email) => {
@@ -50,10 +54,31 @@ const login = async (email) => {
 
 describe('Admin Cascade Delete', () => {
   let adminToken;
-  let testDeptId;
-  let testUnitId;
 
   beforeAll(async () => {
+    await migrateUp();
+  });
+
+  beforeEach(async () => {
+    await db.query(
+      `TRUNCATE correction_suggestion,
+                history_actuals,
+                report_version,
+                validation_issues,
+                line_items_reason,
+                manual_inputs,
+                facts_budget,
+                parsed_cells,
+                report_draft,
+                upload_job,
+                audit_log,
+                user_roles,
+                users,
+                org_unit,
+                org_department
+       RESTART IDENTITY CASCADE`
+    );
+
     // Setup Admin User
     // We need a dummy dept/unit for the admin user to exist
     const { deptId, unitId } = await createDepartmentAndUnit({ unitCode: 'ADMIN_U', departmentCode: 'ADMIN_D' });
@@ -62,7 +87,7 @@ describe('Admin Cascade Delete', () => {
   });
 
   afterAll(async () => {
-    await db.end();
+    await db.pool.end();
   });
 
   test('Should create dept and unit, then fail to delete dept without force', async () => {
@@ -72,7 +97,7 @@ describe('Admin Cascade Delete', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name: 'Cascade Target Dept', code: 'TARGET_DEPT' });
     expect(deptRes.statusCode).toBe(201);
-    testDeptId = deptRes.body.department.id;
+    const testDeptId = deptRes.body.department.id;
 
     // 2. Create Unit
     const unitRes = await request(app)
@@ -80,7 +105,6 @@ describe('Admin Cascade Delete', () => {
       .set('Authorization', `Bearer ${adminToken}`)
       .send({ name: 'Cascade Target Unit', code: 'TARGET_UNIT', department_id: testDeptId });
     expect(unitRes.statusCode).toBe(201);
-    testUnitId = unitRes.body.unit.id;
 
     // 3. Try to delete Dept (should fail)
     const delRes = await request(app)
@@ -91,6 +115,20 @@ describe('Admin Cascade Delete', () => {
   });
 
   test('Should force delete dept and cascade to unit', async () => {
+    const deptRes = await request(app)
+      .post('/api/admin/org/departments')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Cascade Target Dept 2', code: 'TARGET_DEPT_2' });
+    expect(deptRes.statusCode).toBe(201);
+    const testDeptId = deptRes.body.department.id;
+
+    const unitRes = await request(app)
+      .post('/api/admin/org/units')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Cascade Target Unit 2', code: 'TARGET_UNIT_2', department_id: testDeptId });
+    expect(unitRes.statusCode).toBe(201);
+    const testUnitId = unitRes.body.unit.id;
+
     // 4. Force Delete Dept
     const forceDelRes = await request(app)
       .delete(`/api/admin/org/departments/${testDeptId}?force=true`)

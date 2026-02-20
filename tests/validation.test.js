@@ -209,7 +209,7 @@ describe('validation engine', () => {
     expect(warnIssue).toBeTruthy();
   });
 
-  it('blocks generate when fatal exists and allows when none', async () => {
+  it('enforces submit and validation gates before generate', async () => {
     const token = await loginReporter();
     const unit = await db.query('SELECT id FROM org_unit WHERE code = $1', ['U200']);
 
@@ -229,9 +229,8 @@ describe('validation engine', () => {
       .set('Authorization', `Bearer ${token}`)
       .send();
 
-    expect(fatalResponse.status).toBe(400);
-    expect(fatalResponse.body.code).toBe('FATAL_VALIDATION');
-    expect(fatalResponse.body.fatal_count).toBeGreaterThan(0);
+    expect(fatalResponse.status).toBe(409);
+    expect(fatalResponse.body.code).toBe('DRAFT_NOT_SUBMITTED');
 
     const okDraftId = await createDraftWithFacts({
       unitId: unit.rows[0].id,
@@ -244,12 +243,20 @@ describe('validation engine', () => {
       summaryText: '收入合计为100.0万元'
     });
 
+    await db.query(
+      `UPDATE report_draft
+       SET status = 'SUBMITTED', updated_at = now()
+       WHERE id = $1`,
+      [okDraftId]
+    );
+
     const okResponse = await request(app)
       .post(`/api/drafts/${okDraftId}/generate`)
       .set('Authorization', `Bearer ${token}`)
       .send();
 
-    expect(okResponse.status).toBe(201);
-    expect(okResponse.body.report_version_id).toBeTruthy();
+    expect(okResponse.status).toBe(400);
+    expect(okResponse.body.code).toBe('FATAL_VALIDATION');
+    expect(okResponse.body.fatal_count).toBeGreaterThan(0);
   });
 });

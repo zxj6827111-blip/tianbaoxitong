@@ -46,6 +46,17 @@ const toWanyuan = (value) => {
   return Number((parsed / 10000).toFixed(2));
 };
 
+const toFiniteNumber = (value) => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+  return parsed;
+};
+
 const formatWanyuan = (value) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return '0.00';
@@ -418,7 +429,14 @@ const getLineItems = async ({ draftId, uploadId, threshold, unitId, year }) => {
     };
   }).filter((item) => item.code.length >= 7);
 
-  const factKeys = dynamicItems.map((item) => `amount_${item.item_key}`);
+  const dynamicFactKeys = dynamicItems.map((item) => `amount_${item.item_key}`);
+  const staticCurrentKeys = LINE_ITEM_DEFINITIONS.map((item) => item.current_key);
+  const staticPrevKeys = LINE_ITEM_DEFINITIONS.map((item) => item.prev_key);
+  const factKeys = Array.from(new Set([
+    ...dynamicFactKeys,
+    ...staticCurrentKeys,
+    ...staticPrevKeys
+  ]));
 
   if (factKeys.length === 0) {
     return [];
@@ -452,6 +470,38 @@ const getLineItems = async ({ draftId, uploadId, threshold, unitId, year }) => {
     }
   }
 
+  let prevHistoryMap = new Map();
+  if (unitId && year && staticPrevKeys.length > 0) {
+    const prevYear = Number(year) - 1;
+    if (Number.isInteger(prevYear) && prevYear > 0) {
+      const prevHistoryKeys = Array.from(new Set([...staticPrevKeys, ...staticCurrentKeys]));
+      const prevHistoryResult = await db.query(
+        `SELECT key, value_numeric, stage
+         FROM history_actuals
+         WHERE unit_id = $1
+           AND year = $2
+           AND stage = ANY($3)
+           AND key = ANY($4)
+         ORDER BY
+           CASE stage
+             WHEN 'BUDGET' THEN 0
+             WHEN 'FINAL' THEN 1
+             ELSE 2
+           END`,
+        [unitId, prevYear, ['BUDGET', 'FINAL'], prevHistoryKeys]
+      );
+
+      prevHistoryMap = new Map();
+      prevHistoryResult.rows.forEach((row) => {
+        if (prevHistoryMap.has(row.key)) return;
+        const parsed = Number(row.value_numeric);
+        if (Number.isFinite(parsed)) {
+          prevHistoryMap.set(row.key, parsed);
+        }
+      });
+    }
+  }
+
   const reasonsResult = await db.query(
     `SELECT item_key, reason_text, order_no
      FROM line_items_reason
@@ -479,14 +529,79 @@ const getLineItems = async ({ draftId, uploadId, threshold, unitId, year }) => {
     }
   }
 
-  const items = dynamicItems.map((item, index) => {
+  const staticItems = LINE_ITEM_DEFINITIONS.map((definition) => {
+    const hasCurrent = factsMap.has(definition.current_key);
+    const currentValue = hasCurrent ? factsMap.get(definition.current_key) : null;
+
+    const hasPrevFromUpload = factsMap.has(definition.prev_key);
+    const hasPrevFromFacts = prevFactsMap.has(definition.prev_key) || prevFactsMap.has(definition.current_key);
+    const hasPrevFromHistory = prevHistoryMap.has(definition.prev_key) || prevHistoryMap.has(definition.current_key);
+    const prevValue = hasPrevFromUpload
+      ? factsMap.get(definition.prev_key)
+      : prevFactsMap.has(definition.prev_key)
+        ? prevFactsMap.get(definition.prev_key)
+        : prevFactsMap.has(definition.current_key)
+          ? prevFactsMap.get(definition.current_key)
+          : prevHistoryMap.has(definition.prev_key)
+            ? prevHistoryMap.get(definition.prev_key)
+            : prevHistoryMap.has(definition.current_key)
+              ? prevHistoryMap.get(definition.current_key)
+              : null;
+
+    if (!hasCurrent && !hasPrevFromUpload && !hasPrevFromFacts && !hasPrevFromHistory) {
+      return null;
+    }
+
+    const currentWanyuan = toWanyuan(currentValue) ?? 0;
+    const prevWanyuan = toWanyuan(prevValue);
+    const reasonRequired = isReasonRequired(
+      toFiniteNumber(currentValue) ?? 0,
+      toFiniteNumber(prevValue),
+      resolvedThreshold
+    );
+
+    const storedReason = reasonMap.get(definition.item_key);
+    const previousReasonText = previousReasonMap.get(definition.item_key) || '';
+    const previousReasonSnippet = extractReasonSnippet(previousReasonText);
+    const defaultText = buildDefaultReasonText({
+      label: definition.label,
+      currentWanyuan,
+      prevWanyuan,
+      reasonSnippet: previousReasonSnippet
+    });
+    const storedText = storedReason?.reason_text && storedReason.reason_text.trim()
+      ? storedReason.reason_text.trim()
+      : null;
+    const hasManualReason = Boolean(storedText);
+
+    return {
+      item_key: definition.item_key,
+      item_label: definition.label,
+      amount_current_wanyuan: currentWanyuan,
+      amount_prev_wanyuan: prevWanyuan,
+      change_ratio: 0,
+      reason_text: storedText ?? defaultText,
+      previous_reason_text: previousReasonSnippet || previousReasonText,
+      reason_required: reasonRequired,
+      reason_is_manual: hasManualReason,
+      order_no: Number.isFinite(Number(storedReason?.order_no))
+        ? Number(storedReason.order_no)
+        : definition.order_no
+    };
+  }).filter(Boolean);
+
+  const resolvedDynamicItems = dynamicItems.map((item, index) => {
     const amountKey = `amount_${item.item_key}`;
     const currentValue = factsMap.get(amountKey) || 0;
     const currentWanyuan = toWanyuan(currentValue) ?? 0;
 
     const prevValue = prevFactsMap.get(amountKey) ?? prevLineItemMap.get(item.code) ?? null;
     const prevWanyuan = toWanyuan(prevValue);
-    const reasonRequired = isReasonRequired(currentWanyuan, prevWanyuan, resolvedThreshold);
+    const reasonRequired = isReasonRequired(
+      toFiniteNumber(currentValue) ?? 0,
+      toFiniteNumber(prevValue),
+      resolvedThreshold
+    );
 
     const storedReason = reasonMap.get(item.item_key);
     const previousReasonText = previousReasonMap.get(item.item_key) || '';
@@ -500,6 +615,7 @@ const getLineItems = async ({ draftId, uploadId, threshold, unitId, year }) => {
     const storedText = storedReason?.reason_text && storedReason.reason_text.trim()
       ? storedReason.reason_text.trim()
       : null;
+    const hasManualReason = Boolean(storedText);
 
     return {
       item_key: item.item_key,
@@ -510,8 +626,18 @@ const getLineItems = async ({ draftId, uploadId, threshold, unitId, year }) => {
       reason_text: storedText ?? defaultText,
       previous_reason_text: previousReasonSnippet || previousReasonText,
       reason_required: reasonRequired,
-      order_no: index
+      reason_is_manual: hasManualReason,
+      order_no: Number.isFinite(Number(storedReason?.order_no))
+        ? Number(storedReason.order_no)
+        : 100 + index
     };
+  });
+
+  const items = [...staticItems, ...resolvedDynamicItems].sort((a, b) => {
+    if (a.order_no !== b.order_no) {
+      return a.order_no - b.order_no;
+    }
+    return String(a.item_key).localeCompare(String(b.item_key));
   });
 
   return items;

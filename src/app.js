@@ -14,12 +14,31 @@ const finalRoutes = require('./routes/final');
 const { AppError, errorHandler } = require('./errors');
 
 const app = express();
+app.set('query parser', 'simple');
+const DEFAULT_CORS_ORIGINS = ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'];
+const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
+const allowedCorsOrigins = configuredCorsOrigins.length > 0 ? configuredCorsOrigins : DEFAULT_CORS_ORIGINS;
 
 // CORS配置 - 允许前端访问
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'],
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    return cb(null, allowedCorsOrigins.includes(origin));
+  },
   credentials: true
 }));
+
+// Baseline browser hardening headers for API responses.
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
 
 app.use(express.json());
 

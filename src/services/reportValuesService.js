@@ -28,6 +28,13 @@ const parseNumeric = (value) => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 
+const isLikelyValidUnitName = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return false;
+  if (/^\d+$/.test(text)) return false;
+  return true;
+};
+
 const findRowValue = (rows, keywords, options = {}) => {
   if (!Array.isArray(rows)) return null;
   const exclude = options.exclude || [];
@@ -203,7 +210,7 @@ const resolveLatestSuggestions = async ({ unitId, year, factsByKey }) => {
 
 const loadDraftInputs = async (draftId) => {
   const draftResult = await db.query(
-    `SELECT d.id, d.unit_id, d.year, d.upload_id, d.template_version, u.file_name
+    `SELECT d.id, d.unit_id, d.year, d.upload_id, d.template_version, u.file_name, u.caliber
      FROM report_draft d
      JOIN upload_job u ON u.id = d.upload_id
      WHERE d.id = $1`,
@@ -293,6 +300,20 @@ const buildFinalValues = async (draftId) => {
       value_numeric: input.value_numeric !== null && input.value_numeric !== undefined
         ? Number(input.value_numeric)
         : null
+      };
+  }
+
+  const unitResult = await db.query(
+    `SELECT name
+     FROM org_unit
+     WHERE id = $1`,
+    [payload.draft.unit_id]
+  );
+  const orgUnitName = String(unitResult.rows[0]?.name || '').trim();
+  const currentUnitName = String(values.manual_inputs.unit_full_name?.value_text || '').trim();
+  if (isLikelyValidUnitName(orgUnitName) && !isLikelyValidUnitName(currentUnitName)) {
+    values.manual_inputs.unit_full_name = {
+      value_text: orgUnitName
     };
   }
 
@@ -303,13 +324,7 @@ const buildFinalValues = async (draftId) => {
     || shouldRegenerateBudgetExplanation(existingBudgetExplanationText);
 
   if (shouldAutoBuildBudgetExplanation) {
-    const unitResult = await db.query(
-      `SELECT name
-       FROM org_unit
-       WHERE id = $1`,
-      [payload.draft.unit_id]
-    );
-    const unitName = values.manual_inputs.unit_full_name?.value_text || unitResult.rows[0]?.name || '';
+    const unitName = values.manual_inputs.unit_full_name?.value_text || orgUnitName || '';
     const currentValues = {
       budget_revenue_total: factsByKey.get('budget_revenue_total'),
       budget_revenue_fiscal: factsByKey.get('budget_revenue_fiscal'),

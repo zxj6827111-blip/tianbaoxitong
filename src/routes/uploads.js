@@ -12,7 +12,22 @@ const { ensureUploadDir, getUploadFilePath } = require('../services/uploadStorag
 const { sanitizeManualTextByKey } = require('../services/manualTextSanitizer');
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const DEFAULT_MAX_UPLOAD_MB = 20;
+const configuredUploadLimitMb = Number(process.env.UPLOAD_MAX_MB || DEFAULT_MAX_UPLOAD_MB);
+const maxUploadLimitMb = Number.isFinite(configuredUploadLimitMb) && configuredUploadLimitMb > 0
+  ? configuredUploadLimitMb
+  : DEFAULT_MAX_UPLOAD_MB;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: Math.floor(maxUploadLimitMb * 1024 * 1024)
+  }
+});
+
+const isAdminLike = (user) => {
+  const roles = user?.roles || [];
+  return roles.includes('admin') || roles.includes('maintainer');
+};
 
 router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), upload.single('file'), async (req, res, next) => {
   try {
@@ -25,17 +40,17 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
     }
 
     const ext = path.extname(req.file.originalname || '').toLowerCase();
-    if (!['.xlsx', '.xls'].includes(ext)) {
+    if (ext !== '.xlsx') {
       return next(new AppError({
         statusCode: 400,
         code: 'INVALID_FILE_TYPE',
-        message: 'Only .xls/.xlsx files are supported'
+        message: 'Only .xlsx files are supported'
       }));
     }
 
-    // Admin users can specify unit_id in request body, regular users use their assigned unit
-    const isAdmin = req.user.roles && req.user.roles.includes('admin');
-    const unitId = isAdmin && req.body.unit_id ? req.body.unit_id : req.user.unit_id;
+    // Admin/maintainer can specify unit_id in request body, regular users use their assigned unit
+    const adminLike = isAdminLike(req.user);
+    const unitId = adminLike && req.body.unit_id ? req.body.unit_id : req.user.unit_id;
     const year = Number(req.body.year);
     const caliber = req.body.caliber || 'unit';
 
@@ -43,7 +58,7 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
       return next(new AppError({
         statusCode: 400,
         code: 'VALIDATION_ERROR',
-        message: isAdmin ? 'unit_id is required (please select a unit)' : 'User has no assigned unit'
+        message: adminLike ? 'unit_id is required (please select a unit)' : 'User has no assigned unit'
       }));
     }
 
@@ -120,7 +135,7 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     await client.query('BEGIN');
 
     const uploadResult = await client.query(
-      `SELECT id, unit_id, year, file_name, caliber
+      `SELECT id, unit_id, year, file_name, caliber, uploaded_by
        FROM upload_job
        WHERE id = $1`,
       [uploadId]
@@ -135,6 +150,17 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     }
 
     const uploadJob = uploadResult.rows[0];
+    const hasUploadAccess = isAdminLike(req.user)
+      || (req.user?.unit_id && String(req.user.unit_id) === String(uploadJob.unit_id))
+      || (uploadJob.uploaded_by && String(uploadJob.uploaded_by) === String(req.user.id));
+
+    if (!hasUploadAccess) {
+      throw new AppError({
+        statusCode: 403,
+        code: 'FORBIDDEN',
+        message: 'No permission to parse this upload'
+      });
+    }
 
     const existingDraft = await client.query(
       `SELECT id, status

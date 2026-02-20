@@ -2369,7 +2369,7 @@ router.post('/text-content', requireAuth, requireRole(['admin', 'maintainer']), 
 });
 
 // Get Text Content by Category (for reuse in Workbench)
-router.get('/text-content/:deptId/:year/:category', requireAuth, async (req, res, next) => {
+router.get('/text-content/:deptId/:year/:category', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const { deptId, year, category } = req.params;
     const report_type = String(req.query.report_type || 'BUDGET').toUpperCase();
