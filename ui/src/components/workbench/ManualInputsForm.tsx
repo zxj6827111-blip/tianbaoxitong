@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { History } from 'lucide-react';
 
+
 interface ManualInput {
   id?: number;
   key: string;
@@ -105,6 +106,78 @@ const SECTION_TITLES: Record<ManualFormSection, string> = {
 };
 
 const NUMERIC_FIELDS: InputFieldKey[] = ['procurement_amount', 'asset_total'];
+
+// ============================================================
+// 自动排版：对引用的历史文本进行段落规范化
+// ============================================================
+
+/** 需要自动排版的字段（部门主要职能、部门机构设置、名词解释） */
+const AUTO_FORMAT_FIELDS: InputFieldKey[] = ['main_functions', 'organizational_structure', 'glossary'];
+
+/**
+ * 智能排版文本
+ *
+ * 处理逻辑：
+ *  1. 统一换行符
+ *  2. 去除每行首尾多余空格（Tab / 半角空格）
+ *  3. 去除所有空行（空行不作为段落分隔）
+ *  4. 合并断行：如果某行末尾没有中文句末标点（。！？；…），
+ *     且下一行不是编号开头，说明是被截断的一句话，自动合并
+ *  5. 首尾去空白
+ *
+ * 编号行（一、二、三 / 1. / （1） 等）之间用换行分隔但不插入额外空行。
+ */
+function formatTextContent(raw: string): string {
+  if (!raw || !raw.trim()) return raw;
+
+  // 1. 统一换行符
+  const lines = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+
+  // 2. 去除每行首尾多余半角空格和 Tab
+  const trimmedLines = lines
+    .map((line) => line.trimEnd())
+    .map((line) => line.replace(/^[ \t]+/, ''));
+
+  // 3. 过滤掉纯空行
+  const nonEmptyLines = trimmedLines.filter((line) => line !== '');
+
+  // 4. 识别编号行的正则
+  // 支持：（一）（二） / 一、二、 / （1）（2） / 1. / 第一条 / 【 等
+  const isNumberedLine = (line: string) =>
+    /^(?:[（(]?[一二三四五六七八九十百]+[、）)]|[（(]\d+[）)]|\d+[.、．]|第[一二三四五六七八九十百]+[条章节款项]|【)/.test(line);
+
+  // 中文句末标点：句号、叹号、问号、分号、省略号（两个省略号）、顿号结尾不算
+  const endsWithSentencePunct = (line: string) =>
+    /[。！？；…」』】"'）\]）]$/.test(line);
+
+  // 5. 合并断行：逐行检查，若当前行未以句末标点结尾，且下一行不是编号行，则合并
+  const merged: string[] = [];
+  let buffer = '';
+
+  for (let i = 0; i < nonEmptyLines.length; i++) {
+    const line = nonEmptyLines[i];
+
+    if (buffer === '') {
+      buffer = line;
+    } else {
+      // 当前 buffer 末尾是否是完整句子？
+      if (!endsWithSentencePunct(buffer) && !isNumberedLine(line)) {
+        // 不完整且下一行不是新编号段 → 合并（直接拼接，不加空格）
+        buffer += line;
+      } else {
+        // 完整句子或下一行是编号段 → 推入结果，开始新 buffer
+        merged.push(buffer);
+        buffer = line;
+      }
+    }
+  }
+  if (buffer !== '') {
+    merged.push(buffer);
+  }
+
+  // 6. 首尾去空白，段落之间用单个换行连接
+  return merged.join('\n').trim();
+}
 
 const getInputByKey = (inputs: ManualInput[], key: string) => inputs.find((item) => item.key === key);
 
@@ -237,6 +310,10 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
   }, [focusRequest, activeFields]);
 
   const persist = useCallback(async (mode: 'manual' | 'auto') => {
+    if (isSaving || isAutoSaving) {
+      return;
+    }
+
     const payload = buildManualInputs(inputs, activeFields);
     const signature = JSON.stringify(payload);
 
@@ -261,10 +338,10 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
       setIsSaving(false);
       setIsAutoSaving(false);
     }
-  }, [activeFields, inputs, onSave]);
+  }, [activeFields, inputs, isAutoSaving, isSaving, onSave]);
 
   useEffect(() => {
-    if (!autoSave) {
+    if (!autoSave || isSaving || isAutoSaving) {
       return;
     }
 
@@ -277,7 +354,7 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
     return () => {
       window.clearTimeout(timer);
     };
-  }, [inputs, autoSave, persist]);
+  }, [inputs, autoSave, isAutoSaving, isSaving, persist]);
 
   const handleChange = (key: InputFieldKey, value: string) => {
     setInputs((prev) => ({ ...prev, [key]: value }));
@@ -290,9 +367,12 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
 
     const text = await onReuseHistory(key);
     if (text !== null && text !== undefined) {
-      handleChange(key, text);
+      // 对三个文本字段自动执行排版
+      const formatted = AUTO_FORMAT_FIELDS.includes(key) ? formatTextContent(text) : text;
+      handleChange(key, formatted);
     }
   };
+
 
   const renderReuseButton = (key: InputFieldKey) => {
     if (!onReuseHistory) {
@@ -324,10 +404,9 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
     withHistory = false
   ) => (
     <div>
-      <div className="flex justify-between items-center mb-2">
-        <label className="block text-sm font-medium text-slate-700">{label}</label>
-        {withHistory ? renderReuseButton(key) : null}
-      </div>
+      {label && (
+        <label className="block text-sm font-medium text-slate-700 mb-2">{label}</label>
+      )}
       <textarea
         id={`manual-input-${key}`}
         value={inputs[key]}
@@ -336,8 +415,14 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
         rows={rows}
         placeholder={placeholder}
       />
+      {withHistory && (
+        <div className="flex justify-end mt-2">
+          {renderReuseButton(key)}
+        </div>
+      )}
     </div>
   );
+
 
   const renderNumberField = (key: InputFieldKey, label: string, placeholder: string) => (
     <div>
@@ -357,18 +442,17 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
       <div className="bg-white p-6 rounded-lg border border-gray-200 shadow-sm space-y-4">
-        <h3 className="text-lg font-semibold text-slate-800">{SECTION_TITLES[section]}</h3>
 
         {activeFields.includes('main_functions') && (
-          renderTextAreaField('main_functions', '主要职能', '请输入部门主要职能', 6, true)
+          renderTextAreaField('main_functions', '', '请输入部门主要职能', 16, true)
         )}
 
         {activeFields.includes('organizational_structure') && (
-          renderTextAreaField('organizational_structure', '机构设置', '请输入机构设置情况', 6, true)
+          renderTextAreaField('organizational_structure', '', '请输入机构设置情况', 16, true)
         )}
 
         {activeFields.includes('glossary') && (
-          renderTextAreaField('glossary', '名词解释', '请输入名词解释', 6, true)
+          renderTextAreaField('glossary', '', '请输入名词解释', 16, true)
         )}
 
         {activeFields.includes('budget_explanation') && (
@@ -435,10 +519,10 @@ export const ManualInputsForm: React.FC<ManualInputsFormProps> = ({
         </div>
         <button
           type="submit"
-          disabled={isSaving}
+          disabled={isSaving || isAutoSaving}
           className="px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-400 disabled:cursor-not-allowed shadow-sm transition-all font-medium"
         >
-          {isSaving ? '保存中...' : '手动保存'}
+          {isSaving || isAutoSaving ? '保存中...' : '手动保存'}
         </button>
       </div>
     </form>

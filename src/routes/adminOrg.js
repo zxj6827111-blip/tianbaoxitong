@@ -1,12 +1,45 @@
 const express = require('express');
 const multer = require('multer');
+const path = require('node:path');
 const ExcelJS = require('exceljs');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { AppError } = require('../errors');
 const db = require('../db');
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+
+const XLSX_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream',
+  'application/zip'
+]);
+const isValidXlsxUpload = (file) => {
+  const ext = path.extname(file?.originalname || '').toLowerCase();
+  if (ext !== '.xlsx') return false;
+  const mime = String(file?.mimetype || '').toLowerCase();
+  return !mime || XLSX_MIME_TYPES.has(mime);
+};
+const DEFAULT_BATCH_IMPORT_MB = 20;
+const configuredBatchImportLimitMb = Number(process.env.ORG_BATCH_IMPORT_MAX_MB || process.env.UPLOAD_MAX_MB || DEFAULT_BATCH_IMPORT_MB);
+const maxBatchImportLimitMb = Number.isFinite(configuredBatchImportLimitMb) && configuredBatchImportLimitMb > 0
+  ? configuredBatchImportLimitMb
+  : DEFAULT_BATCH_IMPORT_MB;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: Math.floor(maxBatchImportLimitMb * 1024 * 1024)
+  },
+  fileFilter: (req, file, cb) => {
+    if (!isValidXlsxUpload(file)) {
+      return cb(new AppError({
+        statusCode: 400,
+        code: 'INVALID_FILE_TYPE',
+        message: 'Only .xlsx files are supported'
+      }));
+    }
+    return cb(null, true);
+  }
+});
 
 // Create Department
 router.post('/departments', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
@@ -254,14 +287,35 @@ router.post('/reorder', requireAuth, requireRole(['admin', 'maintainer']), async
       });
     }
 
-    const table = type === 'department' ? 'org_department' : 'org_unit';
+    const tableByType = {
+      department: 'org_department',
+      unit: 'org_unit'
+    };
+
+    const table = tableByType[type];
+    if (!table) {
+      throw new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: "type must be either 'department' or 'unit'"
+      });
+    }
 
     await client.query('BEGIN');
 
     for (const item of items) {
+      const sortOrder = Number(item?.sort_order);
+      if (!item?.id || !Number.isFinite(sortOrder)) {
+        throw new AppError({
+          statusCode: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'Each item requires id and numeric sort_order'
+        });
+      }
+
       await client.query(
         `UPDATE ${table} SET sort_order = $1, updated_at = NOW() WHERE id = $2`,
-        [item.sort_order, item.id]
+        [sortOrder, item.id]
       );
     }
 

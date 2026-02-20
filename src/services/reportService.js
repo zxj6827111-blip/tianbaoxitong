@@ -21,7 +21,7 @@ const getPreviewPdfPath = ({ draftId, userId }) =>
   getLatestPreviewPath({ draftId, userId, extension: 'pdf' });
 
 const getPreviewExcelPath = ({ draftId, userId }) =>
-  getLatestPreviewPath({ draftId, userId, extension: 'xls' });
+  getLatestPreviewPath({ draftId, userId, extension: 'xlsx' });
 
 const listPreviewArtifacts = ({ draftId, userId, extension }) => {
   const previewId = buildPreviewId({ draftId, userId });
@@ -153,7 +153,8 @@ const generateReportVersion = async ({ draftId, userId }) => {
       reportVersionId,
       draftSnapshotHash: snapshotHash,
       sourcePath: payload.uploadFilePath,
-      year: payload.draft.year
+      year: payload.draft.year,
+      caliber: payload.draft.caliber || 'unit'
     });
 
     const previewPdfSuffix = 'report.preview.pdf';
@@ -259,7 +260,8 @@ const generateReportPreview = async ({ draftId, userId }) => {
       draftSnapshotHash: snapshotHash,
       sourcePath: payload.uploadFilePath,
       year: payload.draft.year,
-      suffix: `preview.${previewRunId}.xls`
+      caliber: payload.draft.caliber || 'unit',
+      suffix: `preview.${previewRunId}.xlsx`
     });
     excelPath = excelResult.excelPath;
 
@@ -271,7 +273,7 @@ const generateReportPreview = async ({ draftId, userId }) => {
     pdfPath = previewPdf.pdfPath;
 
     const preflight = await validatePdfOutput({ pdfPath: previewPdf.pdfPath });
-    await cleanupOldPreviewArtifacts({ draftId, userId, extension: 'xls' });
+    await cleanupOldPreviewArtifacts({ draftId, userId, extension: 'xlsx' });
     await cleanupOldPreviewArtifacts({ draftId, userId, extension: 'pdf' });
 
     return {

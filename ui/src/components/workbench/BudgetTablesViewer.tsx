@@ -1,5 +1,7 @@
+
 import React, { useEffect, useMemo, useState } from 'react';
 import { apiClient } from '../../utils/apiClient';
+import { buildStructuredView, inferTableKey, StructuredTableView } from './BudgetTableLogic';
 
 interface BudgetTableMeta {
   key: string;
@@ -47,6 +49,31 @@ const statusClass = (status: string) => {
     return 'bg-emerald-50 text-emerald-700 border-emerald-200';
   }
   return 'bg-amber-50 text-amber-700 border-amber-200';
+};
+
+// Simplified column width mapping based on table type
+const getColWidths = (key: string, colCount: number): string[] => {
+  if (['income_summary', 'expenditure_summary', 'general_budget', 'gov_fund_budget', 'capital_budget'].includes(key)) {
+    // Standard code table: 3 codes + 1 name + nums
+    return ['w-12', 'w-12', 'w-12', 'min-w-[240px]', ...Array(colCount - 4).fill('w-28')];
+  }
+  if (key === 'basic_expenditure') {
+    // 2 codes + 1 name + nums
+    return ['w-12', 'w-12', 'min-w-[240px]', ...Array(colCount - 3).fill('w-28')];
+  }
+  if (key === 'fiscal_grant_summary') {
+    // Complex mixed content
+    return ['min-w-[180px]', 'w-24', 'min-w-[180px]', 'w-24', 'w-24', 'w-24', 'w-24'];
+  }
+  if (key === 'budget_summary') {
+    // 4 cols: Item, Budget, Item, Budget
+    return ['min-w-[180px]', 'w-32', 'min-w-[180px]', 'w-32'];
+  }
+  if (key === 'three_public') {
+    // 7 cols
+    return ['min-w-[120px]', 'w-24', 'w-24', 'w-24', 'w-24', 'w-24', 'w-24'];
+  }
+  return Array(colCount).fill('auto'); // Fallback
 };
 
 export const BudgetTablesViewer: React.FC<BudgetTablesViewerProps> = ({ draftId, onStatusChange }) => {
@@ -157,6 +184,32 @@ export const BudgetTablesViewer: React.FC<BudgetTablesViewerProps> = ({ draftId,
     };
   }, [draftId, selectedKey]);
 
+  // Main Rendering Logic
+  const { view, displayRows, colWidths, isStructured } = useMemo(() => {
+    if (!selectedTable) return { view: null, displayRows: [], colWidths: [], isStructured: false };
+
+    // 1. Try to build a structured view using robust logic
+    const inferredKey = inferTableKey(selectedTable.title);
+    const structured = buildStructuredView(inferredKey, selectedTable.rows);
+
+    if (structured) {
+      return {
+        view: structured,
+        displayRows: structured.bodyRows,
+        colWidths: getColWidths(inferredKey, structured.colCount),
+        isStructured: true
+      };
+    }
+
+    // 2. Fallback to generic simple view
+    return {
+      view: null,
+      displayRows: selectedTable.rows.slice(0, 100), // Safety limit for raw fallback
+      colWidths: Array(selectedTable.col_count).fill('auto'),
+      isStructured: false
+    };
+  }, [selectedTable]);
+
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
@@ -223,7 +276,7 @@ export const BudgetTablesViewer: React.FC<BudgetTablesViewerProps> = ({ draftId,
       ) : null}
 
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
-        <aside className="xl:col-span-1 rounded-lg border border-slate-200 bg-white p-3 space-y-2">
+        <aside className="xl:col-span-1 border-r border-slate-200 bg-white p-3 space-y-2 lg:border lg:rounded-lg">
           <div className="text-sm font-semibold text-slate-800 px-1">预算表目录</div>
           {loadingMeta ? (
             <div className="text-sm text-slate-500 px-1 py-2">目录加载中...</div>
@@ -237,11 +290,10 @@ export const BudgetTablesViewer: React.FC<BudgetTablesViewerProps> = ({ draftId,
                   key={table.key}
                   type="button"
                   onClick={() => setSelectedKey(table.key)}
-                  className={`w-full text-left rounded-md border px-2.5 py-2 transition-colors ${
-                    active ? 'border-brand-300 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'
-                  }`}
+                  className={`w-full text-left rounded-md border px-2.5 py-2 transition-colors ${active ? 'border-brand-500 bg-brand-50 shadow-sm ring-1 ring-brand-200' : 'border-slate-200 hover:bg-slate-50'
+                    }`}
                 >
-                  <div className="text-sm text-slate-800">{table.title}</div>
+                  <div className={`text-sm ${active ? 'font-medium text-brand-700' : 'text-slate-700'}`}>{table.title}</div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-xs">
                     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 ${statusClass(table.status)}`}>
                       {table.status === 'READY' ? '已识别' : '缺失'}
@@ -254,41 +306,92 @@ export const BudgetTablesViewer: React.FC<BudgetTablesViewerProps> = ({ draftId,
           )}
         </aside>
 
-        <section className="xl:col-span-3 rounded-lg border border-slate-200 bg-white p-3 space-y-3">
+        <section className="xl:col-span-3 rounded-lg border border-slate-200 bg-white p-4 space-y-4">
           {loadingDetail ? (
-            <div className="text-sm text-slate-500 py-8 text-center">预算表加载中...</div>
+            <div className="text-sm text-slate-500 py-16 text-center flex flex-col items-center gap-2">
+              <div className="animate-spin rounded-full h-5 w-5 border-2 border-slate-300 border-t-brand-500"></div>
+              <div>预算表加载中...</div>
+            </div>
           ) : !selectedTable ? (
-            <div className="text-sm text-slate-500 py-8 text-center">请选择左侧预算表查看。</div>
+            <div className="text-sm text-slate-500 py-16 text-center">请选择左侧预算表查看。</div>
           ) : selectedTable.status !== 'READY' ? (
             <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-3">
               当前文件中未识别到该预算表，请确认上传模板是否完整。
             </div>
           ) : (
             <>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-base font-semibold text-slate-900">{selectedTable.title}</div>
-                  <div className="text-xs text-slate-500 mt-1">
-                    来源工作表: {selectedTable.sheet_name || '-'} | 行: {selectedTable.row_count} | 列: {selectedTable.col_count}
-                  </div>
+              {/* Report Header Section */}
+              <div className="flex flex-col items-center gap-4 pb-4">
+                <div className="text-center w-full">
+                  <div className="text-xl font-bold text-slate-900 tracking-wide">{selectedTable.title}</div>
+                </div>
+
+                {/* Information Bar - Dept Name and Unit */}
+                <div className="w-full flex items-center justify-between text-sm font-medium text-slate-700 px-1">
+                  <div>{view?.meta.orgLabel || '编制部门'}：{view?.meta.orgValue || '-'}</div>
+                  <div>单位：{view?.meta.unitValue || '元'}</div>
                 </div>
               </div>
 
-              <div className="overflow-auto border border-slate-200 rounded-md max-h-[640px]">
-                <table className="min-w-full text-xs text-slate-700">
+              {/* Enhanced Table Display */}
+              <div className="overflow-auto rounded-sm border border-slate-700 shadow-sm max-h-[700px] bg-white">
+                <table className="min-w-full text-xs text-slate-800 border-collapse">
+                  {/* Column Grouping for widths */}
+                  <colgroup>
+                    {colWidths.length > 0 ? (
+                      colWidths.map((w, idx) => <col key={idx} className={w} />)
+                    ) : (
+                      Array.from({ length: selectedTable.col_count }).map((_, idx) => <col key={idx} className="auto" />)
+                    )}
+                  </colgroup>
+
+                  {/* Render Structured Header */}
+                  {isStructured && view ? (
+                    <thead>
+                      {view.headerRows.map((headerRow, rowIndex) => (
+                        <tr key={`h-${rowIndex}`} className="bg-slate-50">
+                          {headerRow.map((cell, cellIndex) => (
+                            <th
+                              key={`h-${rowIndex}-${cellIndex}`}
+                              colSpan={cell.colSpan}
+                              rowSpan={cell.rowSpan}
+                              className="border border-slate-700 px-2.5 py-2 text-slate-900 font-semibold text-center align-middle"
+                            >
+                              {cell.text}
+                            </th>
+                          ))}
+                        </tr>
+                      ))}
+                    </thead>
+                  ) : null}
+
                   <tbody>
-                    {selectedTable.rows.map((row, rowIndex) => (
-                      <tr key={`r-${rowIndex}`} className={rowIndex === 0 ? 'bg-slate-100' : rowIndex % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
-                        {Array.from({ length: Math.max(selectedTable.col_count, row.length) }).map((_, colIndex) => (
-                          <td
-                            key={`c-${rowIndex}-${colIndex}`}
-                            className="border-b border-r border-slate-200 px-2 py-1.5 align-top whitespace-nowrap"
-                          >
-                            {row[colIndex] || ''}
-                          </td>
-                        ))}
+                    {displayRows.map((row, rowIndex) => {
+                      return (
+                        <tr key={`r-${rowIndex}`} className="hover:bg-slate-50 border-b border-slate-200">
+                          {row.map((cellValue, colIndex) => {
+                            // Check if cell is numeric using view info if available
+                            const isNumeric = isStructured && view ? view.numericColumns.includes(colIndex) : /^-?[\d,]+(\.\d+)?%?$/.test(cellValue) && cellValue.trim().length > 0;
+
+                            return (
+                              <td
+                                key={`c-${rowIndex}-${colIndex}`}
+                                className={`border border-slate-700 px-3 py-2 align-middle whitespace-nowrap ${isNumeric ? 'text-right font-mono' : 'text-left'}`}
+                              >
+                                {cellValue}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                    {displayRows.length === 0 && (
+                      <tr>
+                        <td colSpan={selectedTable.col_count} className="p-8 text-center text-slate-400">
+                          表格数据为空或已被全部过滤
+                        </td>
                       </tr>
-                    ))}
+                    )}
                   </tbody>
                 </table>
               </div>

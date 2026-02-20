@@ -5,6 +5,7 @@ const app = require('../src/app');
 const db = require('../src/db');
 const { migrateUp } = require('./helpers/migrations');
 const { hashPassword } = require('../src/auth/password');
+const { resetLoginRateLimitStore } = require('../src/services/loginRateLimiter');
 
 const seedUserWithRole = async (roleName) => {
   const department = await db.query(
@@ -46,6 +47,7 @@ describe('auth', () => {
   });
 
   beforeEach(async () => {
+    resetLoginRateLimitStore();
     await db.query('TRUNCATE user_roles, users, org_unit, org_department RESTART IDENTITY CASCADE');
   });
 
@@ -83,5 +85,33 @@ describe('auth', () => {
 
     expect(response.status).toBe(403);
     expect(response.body.code).toBe('FORBIDDEN');
+  });
+
+  it('rate limits repeated failed logins', async () => {
+    await seedUserWithRole('viewer');
+    const credentialLimit = Math.max(Number(process.env.LOGIN_RATE_LIMIT_CREDENTIAL_MAX || 8), 1);
+
+    for (let i = 0; i < credentialLimit; i += 1) {
+      const failed = await request(app)
+        .post('/api/auth/login')
+        .send({ email: 'user@example.com', password: 'wrong-password' });
+      expect(failed.status).toBe(401);
+      expect(failed.body.code).toBe('INVALID_CREDENTIALS');
+    }
+
+    const blocked = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'user@example.com', password: 'wrong-password' });
+
+    expect(blocked.status).toBe(429);
+    expect(blocked.body.code).toBe('TOO_MANY_REQUESTS');
+    expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
+
+    const blockedValid = await request(app)
+      .post('/api/auth/login')
+      .send({ email: 'user@example.com', password: 'secret' });
+
+    expect(blockedValid.status).toBe(429);
+    expect(blockedValid.body.code).toBe('TOO_MANY_REQUESTS');
   });
 });

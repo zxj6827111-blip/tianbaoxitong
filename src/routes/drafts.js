@@ -23,6 +23,8 @@ const {
 const { sanitizeManualInputRow, sanitizeManualTextByKey } = require('../services/manualTextSanitizer');
 const { createSuggestion, listDraftSuggestions } = require('../repositories/suggestionRepository');
 const { getUploadFilePath } = require('../services/uploadStorage');
+const { extractHistoryFactsFromTableData } = require('../services/historyFactAutoExtractor');
+const { recalculateSheetFormulaCells } = require('../services/excelFormulaEvaluator');
 
 const router = express.Router();
 
@@ -39,9 +41,20 @@ const HISTORY_TEXT_CATEGORY_BY_KEY = {
   glossary: 'TERMINOLOGY',
   budget_explanation: 'EXPLANATION',
   budget_overview: 'EXPLANATION_OVERVIEW',
+  budget_change_reason: 'EXPLANATION_CHANGE_REASON',
   change_reason: 'EXPLANATION_CHANGE_REASON',
   fiscal_detail: 'EXPLANATION_FISCAL_DETAIL',
   three_public_explanation: 'OTHER_THREE_PUBLIC'
+};
+
+const BUDGET_CHANGE_REASON_LINE_REGEX = /财政拨款收入支出(?:增加（减少）|增加|减少|持平)?的主要原因是[:：]?\s*[^。\n；;]+/;
+
+const extractBudgetChangeReasonLine = (text) => {
+  const source = String(text || '').replace(/\r\n/g, '\n');
+  const matched = source.match(BUDGET_CHANGE_REASON_LINE_REGEX);
+  if (!matched || !matched[0]) return '';
+  const normalized = matched[0].trim().replace(/[。；;]+$/g, '');
+  return normalized ? `${normalized}。` : '';
 };
 
 const DIFF_FACT_KEYS = [
@@ -50,7 +63,13 @@ const DIFF_FACT_KEYS = [
   { key: 'fiscal_grant_revenue_total', label: '财政拨款收入合计' },
   { key: 'fiscal_grant_expenditure_total', label: '财政拨款支出合计' },
   { key: 'budget_expenditure_basic', label: '基本支出' },
-  { key: 'budget_expenditure_project', label: '项目支出' }
+  { key: 'budget_expenditure_project', label: '项目支出' },
+  { key: 'budget_revenue_business', label: '事业收入' },
+  { key: 'budget_revenue_operation', label: '事业单位经营收入' },
+  { key: 'budget_revenue_other', label: '其他收入' },
+  { key: 'fiscal_grant_expenditure_general', label: '一般公共预算拨款支出' },
+  { key: 'fiscal_grant_expenditure_gov_fund', label: '政府性基金拨款支出' },
+  { key: 'fiscal_grant_expenditure_capital', label: '国有资本经营预算拨款支出' }
 ];
 
 const BUDGET_TABLE_DEFS = [
@@ -186,6 +205,7 @@ const trimTrailingEmptyRows = (rows) => {
 };
 
 const extractSheetRows = (sheet) => {
+  recalculateSheetFormulaCells(sheet);
   const rawRows = XLSX.utils.sheet_to_json(sheet, {
     header: 1,
     raw: false,
@@ -197,12 +217,147 @@ const extractSheetRows = (sheet) => {
 
 const getColumnCount = (rows) => rows.reduce((max, row) => Math.max(max, row.length), 0);
 
-const parseNumericCell = (value) => {
+const parseAmountLikeCell = (value) => {
   if (value === null || value === undefined) return null;
-  const cleaned = String(value).replace(/,/g, '').replace(/[^\d.\-]/g, '').trim();
-  if (!cleaned || cleaned === '-' || cleaned === '.' || cleaned === '-.') return null;
-  const parsed = Number(cleaned);
+  const raw = String(value).replace(/,/g, '').replace(/\s+/g, '').trim();
+  if (!raw || raw === '-' || raw === '.' || raw === '-.') return null;
+  const normalized = /^\((.+)\)$/.test(raw) ? raw.replace(/^\((.+)\)$/, '-$1') : raw;
+  const matched = normalized.match(/^[-+]?\d+(\.\d+)?(?:万元|万|元)?$/);
+  if (!matched) return null;
+  const parsed = Number(normalized.replace(/(?:万元|万|元)$/g, ''));
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const toRoundedNumber = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Number(parsed.toFixed(2));
+};
+
+const normalizeThreePublicCurrentValues = (input) => {
+  const base = {
+    three_public_total: null,
+    three_public_outbound: null,
+    three_public_vehicle_total: null,
+    three_public_vehicle_purchase: null,
+    three_public_vehicle_operation: null,
+    three_public_reception: null,
+    operation_fund: null
+  };
+
+  for (const key of Object.keys(base)) {
+    const parsed = toRoundedNumber(input?.[key]);
+    base[key] = parsed;
+  }
+
+  const vehiclePurchase = base.three_public_vehicle_purchase;
+  const vehicleOperation = base.three_public_vehicle_operation;
+  const vehicleTotal = base.three_public_vehicle_total;
+  const canDeriveVehicleTotal = Number.isFinite(vehiclePurchase) && Number.isFinite(vehicleOperation);
+  const derivedVehicleTotal = canDeriveVehicleTotal
+    ? toRoundedNumber(vehiclePurchase + vehicleOperation)
+    : null;
+
+  if (derivedVehicleTotal !== null) {
+    const vehicleTotalMissing = vehicleTotal === null;
+    const vehicleTotalLooksBlank = vehicleTotal !== null && Math.abs(vehicleTotal) < 0.0001 && Math.abs(derivedVehicleTotal) > 0.0001;
+    if (vehicleTotalMissing || vehicleTotalLooksBlank) {
+      base.three_public_vehicle_total = derivedVehicleTotal;
+    }
+  }
+
+  const outbound = base.three_public_outbound;
+  const reception = base.three_public_reception;
+  const total = base.three_public_total;
+  const canDeriveTotal = Number.isFinite(outbound)
+    && Number.isFinite(reception)
+    && Number.isFinite(base.three_public_vehicle_total);
+  const derivedTotal = canDeriveTotal
+    ? toRoundedNumber(outbound + reception + base.three_public_vehicle_total)
+    : null;
+
+  if (derivedTotal !== null) {
+    const totalMissing = total === null;
+    const totalLooksBlank = total !== null && Math.abs(total) < 0.0001 && Math.abs(derivedTotal) > 0.0001;
+    if (totalMissing || totalLooksBlank) {
+      base.three_public_total = derivedTotal;
+    }
+  }
+
+  return base;
+};
+
+const toWanyuanFromYuan = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Number((parsed / 10000).toFixed(2));
+};
+
+const toYuanFromWanyuan = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return Number((parsed * 10000).toFixed(2));
+};
+
+const toFiniteNumberOrNull = (value) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  return parsed;
+};
+
+const loadPreviousBudgetValuesByKey = async ({ unitId, year, keys }) => {
+  const result = new Map();
+  if (!unitId || !year || !Array.isArray(keys) || keys.length === 0) {
+    return result;
+  }
+
+  const prevYear = Number(year) - 1;
+  if (!Number.isInteger(prevYear) || prevYear <= 0) {
+    return result;
+  }
+
+  const historyResult = await db.query(
+    `SELECT key, value_numeric, stage
+     FROM history_actuals
+     WHERE unit_id = $1
+       AND year = $2
+       AND stage = ANY($3)
+       AND key = ANY($4)
+     ORDER BY
+       CASE stage
+         WHEN 'BUDGET' THEN 0
+         WHEN 'FINAL' THEN 1
+         ELSE 2
+       END ASC`,
+    [unitId, prevYear, ['BUDGET', 'FINAL'], keys]
+  );
+
+  historyResult.rows.forEach((row) => {
+    if (result.has(row.key)) return;
+    if (row.value_numeric === null || row.value_numeric === undefined) return;
+    const value = Number(row.value_numeric);
+    if (!Number.isFinite(value)) return;
+    result.set(row.key, {
+      value,
+      source: row.stage === 'BUDGET' ? 'history_actuals_budget' : 'history_actuals_final'
+    });
+  });
+
+  const factsResult = await db.query(
+    `SELECT key, value_numeric
+     FROM facts_budget
+     WHERE unit_id = $1 AND year = $2 AND key = ANY($3)`,
+    [unitId, prevYear, keys]
+  );
+
+  factsResult.rows.forEach((row) => {
+    if (result.has(row.key)) return;
+    const converted = toWanyuanFromYuan(row.value_numeric);
+    if (!Number.isFinite(converted)) return;
+    result.set(row.key, { value: converted, source: 'facts_budget' });
+  });
+
+  return result;
 };
 
 const matchSheet = (sheetNames, patterns) => {
@@ -230,7 +385,7 @@ const matchRowByKeywords = (rows, includeKeywords = [], excludeKeywords = []) =>
       continue;
     }
     const numbers = row
-      .map((cell) => parseNumericCell(cell))
+      .map((cell) => parseAmountLikeCell(cell))
       .filter((value) => value !== null);
     if (numbers.length === 0) {
       continue;
@@ -298,9 +453,9 @@ const loadDraftBudgetTables = async (draft) => {
   let workbook;
   try {
     workbook = XLSX.readFile(filePath, {
-      cellFormula: false,
+      cellFormula: true,
       cellHTML: false,
-      cellNF: false,
+      cellNF: true,
       cellStyles: false
     });
   } catch (error) {
@@ -429,7 +584,18 @@ const updateDraftState = async ({ client, draftId, status, ifMatchUpdatedAt = nu
     await throwStaleOrNotFound(client, draftId);
   }
 
-  return result.rows[0];
+  const updatedDraft = result.rows[0];
+  const unitResult = await client.query(
+    `SELECT name
+     FROM org_unit
+     WHERE id = $1`,
+    [updatedDraft.unit_id]
+  );
+
+  return {
+    ...updatedDraft,
+    unit_name: unitResult.rows[0]?.name || null
+  };
 };
 
 const appendAuditLog = async ({ client, req, userId, action, entityId, meta = null }) => {
@@ -711,32 +877,28 @@ router.get('/:id/diff-summary', requireAuth, async (req, res, next) => {
       [draft.upload_id, keys]
     );
 
-    const prevFactsResult = await db.query(
-      `SELECT key, value_numeric
-       FROM facts_budget
-       WHERE unit_id = $1 AND year = $2 AND key = ANY($3)`,
-      [draft.unit_id, prevYear, keys]
-    );
+    const previousWanyuanMap = await loadPreviousBudgetValuesByKey({
+      unitId: draft.unit_id,
+      year: draft.year,
+      keys
+    });
 
-    const prevHistoryResult = await db.query(
-      `SELECT key, value_numeric
-       FROM history_actuals
-       WHERE unit_id = $1 AND year = $2 AND stage = 'BUDGET' AND key = ANY($3)`,
-      [draft.unit_id, prevYear, keys]
-    );
-
-    const currentMap = new Map(currentResult.rows.map((row) => [row.key, Number(row.value_numeric)]));
-    const prevMap = new Map(prevFactsResult.rows.map((row) => [row.key, Number(row.value_numeric)]));
-
-    prevHistoryResult.rows.forEach((row) => {
-      if (!prevMap.has(row.key)) {
-        prevMap.set(row.key, Number(row.value_numeric));
+    const currentMap = new Map();
+    currentResult.rows.forEach((row) => {
+      const value = toFiniteNumberOrNull(row.value_numeric);
+      if (value !== null) {
+        currentMap.set(row.key, value);
       }
     });
 
     const items = keys.map((key) => {
       const currentValue = currentMap.has(key) ? Number(currentMap.get(key)) : null;
-      const previousValue = prevMap.has(key) ? Number(prevMap.get(key)) : null;
+      const previousWanyuan = previousWanyuanMap.has(key)
+        ? previousWanyuanMap.get(key).value
+        : null;
+      const previousValue = previousWanyuan === null || previousWanyuan === undefined
+        ? null
+        : toYuanFromWanyuan(previousWanyuan);
 
       const diff = currentValue !== null && previousValue !== null
         ? Number((currentValue - previousValue).toFixed(2))
@@ -880,33 +1042,69 @@ router.get('/:id/other-related-auto', requireAuth, async (req, res, next) => {
     const threePublicTable = tableMap.get('table_three_public_operation');
     const rows = Array.isArray(threePublicTable?.rows) ? threePublicTable.rows : [];
 
+    const titleLikeExcludes = ['预算表', '编制部门', '单位:', '单位：', '部门预算'];
     const defs = [
-      { key: 'three_public_total', label: '三公经费合计', include: ['三公'], exclude: ['购置及运行费', '购置费', '运行费', '接待费'] },
-      { key: 'three_public_outbound', label: '因公出国（境）费', include: ['因公', '出国'], exclude: [] },
-      { key: 'three_public_vehicle_total', label: '公务用车购置及运行费', include: ['公务用车', '购置及运行费'], exclude: ['购置费', '运行费'] },
-      { key: 'three_public_vehicle_purchase', label: '公务用车购置费', include: ['公务用车', '购置费'], exclude: ['购置及运行费'] },
-      { key: 'three_public_vehicle_operation', label: '公务用车运行费', include: ['公务用车', '运行费'], exclude: ['购置及运行费'] },
-      { key: 'three_public_reception', label: '公务接待费', include: ['公务接待费'], exclude: [] },
-      { key: 'operation_fund', label: '机关运行经费', include: ['机关运行'], exclude: [] }
+      { key: 'three_public_total', label: '三公经费合计', include: ['三公', '预算数'], exclude: ['购置及运行费', '购置费', '运行费', '接待费', ...titleLikeExcludes] },
+      { key: 'three_public_outbound', label: '因公出国（境）费', include: ['因公', '出国'], exclude: titleLikeExcludes },
+      { key: 'three_public_vehicle_total', label: '公务用车购置及运行费', include: ['公务用车', '购置及运行费'], exclude: ['购置费', '运行费', ...titleLikeExcludes] },
+      { key: 'three_public_vehicle_purchase', label: '公务用车购置费', include: ['公务用车', '购置费'], exclude: ['购置及运行费', ...titleLikeExcludes] },
+      { key: 'three_public_vehicle_operation', label: '公务用车运行费', include: ['公务用车', '运行费'], exclude: ['购置及运行费', ...titleLikeExcludes] },
+      { key: 'three_public_reception', label: '公务接待费', include: ['公务接待费'], exclude: titleLikeExcludes },
+      { key: 'operation_fund', label: '机关运行经费', include: ['机关运行经费'], exclude: titleLikeExcludes }
     ];
+
+    const currentValueMap = normalizeThreePublicCurrentValues(
+      extractHistoryFactsFromTableData([
+        {
+          table_key: 'three_public',
+          data_json: rows
+        }
+      ])
+    );
+
+    const previousValueMap = await loadPreviousBudgetValuesByKey({
+      unitId: draft.unit_id,
+      year: draft.year,
+      keys: defs.map((def) => def.key)
+    });
 
     const autoValues = {};
     const unavailableFields = [];
 
     defs.forEach((def) => {
-      const match = matchRowByKeywords(rows, def.include, def.exclude);
+      const currentFromStructured = Number.isFinite(Number(currentValueMap?.[def.key]))
+        ? Number(currentValueMap[def.key])
+        : null;
+      const match = currentFromStructured === null ? matchRowByKeywords(rows, def.include, def.exclude) : null;
       autoValues[def.key] = {
-        current: match ? match.current : null,
+        current: currentFromStructured !== null ? currentFromStructured : (match ? match.current : null),
         previous: match ? match.previous : null,
-        source: match
+        source: currentFromStructured !== null
           ? {
             table_key: 'table_three_public_operation',
             sheet_name: threePublicTable?.sheet_name || null,
-            row_index: match.row_index
+            row_index: null,
+            extractor: 'history_fact_auto'
           }
-          : null
+          : (match
+            ? {
+              table_key: 'table_three_public_operation',
+              sheet_name: threePublicTable?.sheet_name || null,
+              row_index: match.row_index
+            }
+            : null)
       };
-      if (!match || match.current === null) {
+
+      if (autoValues[def.key].previous === null && previousValueMap.has(def.key)) {
+        const fallback = previousValueMap.get(def.key);
+        autoValues[def.key].previous = fallback.value;
+        autoValues[def.key].source = {
+          ...(autoValues[def.key].source || {}),
+          previous_source: fallback.source
+        };
+      }
+
+      if (autoValues[def.key].current === null || autoValues[def.key].current === undefined) {
         unavailableFields.push({
           key: def.key,
           label: def.label,
@@ -1113,7 +1311,38 @@ router.get('/:id/history-text', requireAuth, async (req, res, next) => {
       [departmentId, prevYear, category]
     );
 
-    const contentText = sanitizeManualTextByKey(key, textResult.rows[0]?.content_text);
+    let contentTextRaw = textResult.rows[0]?.content_text || null;
+
+    // Backward compatibility: some historical archives only have EXPLANATION text,
+    // without a dedicated EXPLANATION_CHANGE_REASON category.
+    if ((!contentTextRaw || !String(contentTextRaw).trim()) && (key === 'budget_change_reason' || key === 'change_reason')) {
+      const fallbackResult = await db.query(
+        `SELECT category, content_text
+         FROM org_dept_text_content
+         WHERE department_id = $1
+           AND year = $2
+           AND report_type = 'BUDGET'
+           AND category = ANY($3)
+         ORDER BY
+           CASE category
+             WHEN 'EXPLANATION_CHANGE_REASON' THEN 0
+             WHEN 'EXPLANATION' THEN 1
+             WHEN 'EXPLANATION_OVERVIEW' THEN 2
+             ELSE 3
+           END`,
+        [departmentId, prevYear, ['EXPLANATION_CHANGE_REASON', 'EXPLANATION', 'EXPLANATION_OVERVIEW']]
+      );
+
+      for (const row of fallbackResult.rows) {
+        const candidate = extractBudgetChangeReasonLine(row.content_text);
+        if (candidate) {
+          contentTextRaw = candidate;
+          break;
+        }
+      }
+    }
+
+    const contentText = sanitizeManualTextByKey(key, contentTextRaw);
 
     return res.json({
       content_text: contentText || null
@@ -1582,11 +1811,8 @@ router.post('/:id/preview', requireAuth, async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
 
-    let issues = await fetchIssues(draft.id, null);
-    if (issues.length === 0) {
-      const validationResult = await runValidation(draft.id, { user: req.user });
-      issues = validationResult.issues;
-    }
+    const validationResult = await runValidation(draft.id, { user: req.user });
+    const issues = validationResult.issues;
 
     const fatalIssues = issues.filter((issue) => issue.level === 'FATAL');
     if (fatalIssues.length > 0) {
@@ -1654,7 +1880,12 @@ router.get('/:id/preview/excel', requireAuth, async (req, res, next) => {
       draftId: draft.id,
       userId: req.user.id
     });
-    return await sendFileOr404(res, previewExcelPath, 'application/vnd.ms-excel', `draft_${draft.id}_preview.xls`);
+    return await sendFileOr404(
+      res,
+      previewExcelPath,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      `draft_${draft.id}_preview.xlsx`
+    );
   } catch (error) {
     return next(error);
   }
@@ -1674,11 +1905,8 @@ router.post('/:id/generate', requireAuth, async (req, res, next) => {
       });
     }
 
-    let issues = await fetchIssues(draft.id, null);
-    if (issues.length === 0) {
-      const validationResult = await runValidation(draft.id, { user: req.user });
-      issues = validationResult.issues;
-    }
+    const validationResult = await runValidation(draft.id, { user: req.user });
+    const issues = validationResult.issues;
 
     const fatalIssues = issues.filter((issue) => issue.level === 'FATAL');
     if (fatalIssues.length > 0) {

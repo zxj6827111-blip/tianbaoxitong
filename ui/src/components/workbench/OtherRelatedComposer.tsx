@@ -63,6 +63,22 @@ type FormState = {
   asset_purchase_vehicle_count: string;
   asset_purchase_device_over_million: string;
   asset_notes: string;
+  asset_vehicle_ministerial: string;
+  asset_vehicle_leadership: string;
+  asset_vehicle_communication: string;
+  asset_vehicle_emergency: string;
+  asset_vehicle_enforcement: string;
+  asset_vehicle_special: string;
+  asset_vehicle_retired: string;
+  asset_vehicle_other: string;
+  asset_purchase_ministerial: string;
+  asset_purchase_leadership: string;
+  asset_purchase_communication: string;
+  asset_purchase_emergency: string;
+  asset_purchase_enforcement: string;
+  asset_purchase_special: string;
+  asset_purchase_retired: string;
+  asset_purchase_other: string;
 };
 
 type StringFieldKey = {
@@ -70,6 +86,8 @@ type StringFieldKey = {
 }[keyof FormState];
 
 const toText = (value: unknown) => (value === null || value === undefined ? '' : String(value));
+const cleanUnitName = (name: string) => name.replace(/[（(]部门[）)]\s*主要职能$/, '').trim();
+
 const parseBool = (value: unknown) => ['1', 'true', 'yes', 'y'].includes(String(value || '').toLowerCase());
 
 const formatAmount = (value: string) => {
@@ -84,7 +102,7 @@ const toDeltaText = (currentRaw: string, previousRaw: string, prevYear: number) 
   const current = Number(currentRaw);
   const previous = Number(previousRaw);
   if (!Number.isFinite(current) || !Number.isFinite(previous)) {
-    return `比${prevYear}年预算增加（减少）XXX万元（持平）`;
+    return `比${prevYear}年预算暂无可比数据`;
   }
   const diff = current - previous;
   if (Math.abs(diff) < 0.0001) {
@@ -112,7 +130,7 @@ const createInitialState = (initialInputs: ManualInput[]): FormState => {
   };
 
   return {
-    unit_name: readText('unit_full_name'),
+    unit_name: cleanUnitName(readText('unit_full_name')),
     three_public_total: readNumeric('other_three_public_total'),
     three_public_total_prev: readNumeric('other_three_public_total_prev'),
     outbound_fee: readNumeric('other_outbound_fee'),
@@ -153,7 +171,23 @@ const createInitialState = (initialInputs: ManualInput[]): FormState => {
     asset_device_over_million: readNumeric('other_asset_device_over_million'),
     asset_purchase_vehicle_count: readNumeric('other_asset_purchase_vehicle_count'),
     asset_purchase_device_over_million: readNumeric('other_asset_purchase_device_over_million'),
-    asset_notes: readText('asset_notes')
+    asset_notes: readText('asset_notes'),
+    asset_vehicle_ministerial: readNumeric('other_asset_vehicle_ministerial'),
+    asset_vehicle_leadership: readNumeric('other_asset_vehicle_leadership'),
+    asset_vehicle_communication: readNumeric('other_asset_vehicle_communication'),
+    asset_vehicle_emergency: readNumeric('other_asset_vehicle_emergency'),
+    asset_vehicle_enforcement: readNumeric('other_asset_vehicle_enforcement'),
+    asset_vehicle_special: readNumeric('other_asset_vehicle_special'),
+    asset_vehicle_retired: readNumeric('other_asset_vehicle_retired'),
+    asset_vehicle_other: readNumeric('other_asset_vehicle_other'),
+    asset_purchase_ministerial: readNumeric('other_asset_purchase_ministerial'),
+    asset_purchase_leadership: readNumeric('other_asset_purchase_leadership'),
+    asset_purchase_communication: readNumeric('other_asset_purchase_communication'),
+    asset_purchase_emergency: readNumeric('other_asset_purchase_emergency'),
+    asset_purchase_enforcement: readNumeric('other_asset_purchase_enforcement'),
+    asset_purchase_special: readNumeric('other_asset_purchase_special'),
+    asset_purchase_retired: readNumeric('other_asset_purchase_retired'),
+    asset_purchase_other: readNumeric('other_asset_purchase_other')
   };
 };
 
@@ -162,9 +196,8 @@ const buildAssetsSection = (state: FormState, year: number) => {
   const unitName = state.unit_name.trim() || '本部门';
   return [
     '五、国有资产占有使用情况',
-    `截至${prevYear}年8月31日，${unitName}共有车辆${state.asset_vehicle_total || 'XX'}辆；单价100万元（含）以上设备（不含车辆）${state.asset_device_over_million || 'XX'}台（套）。`,
-    `${year}年部门预算安排购置车辆${state.asset_purchase_vehicle_count || 'XX'}辆；部门预算安排购置单价100万元（含）以上设备（不含车辆）${state.asset_purchase_device_over_million || 'XX'}台（套）。`,
-    state.asset_notes.trim() ? `补充说明：${state.asset_notes.trim()}` : ''
+    `截至${prevYear}年8月31日，${unitName}共有车辆${state.asset_vehicle_total || 'XX'}辆，其中：部级领导干部用车${state.asset_vehicle_ministerial || 'XX'}辆、主要领导干部用车${state.asset_vehicle_leadership || 'XX'}辆、机要通信用车${state.asset_vehicle_communication || 'XX'}辆、应急保障用车${state.asset_vehicle_emergency || 'XX'}辆、执法执勤用车${state.asset_vehicle_enforcement || 'XX'}辆、特种专业技术用车${state.asset_vehicle_special || 'XX'}辆、离退休干部用车${state.asset_vehicle_retired || 'XX'}辆、其他用车${state.asset_vehicle_other || 'XX'}辆；单价100万元（含）以上设备（不含车辆）${state.asset_device_over_million || 'XX'}台（套）。`,
+    `${year}年部门预算安排购置车辆${state.asset_purchase_vehicle_count || 'XX'}辆，其中：部级领导干部用车${state.asset_purchase_ministerial || 'XX'}辆、主要领导干部用车${state.asset_purchase_leadership || 'XX'}辆、机要通信用车${state.asset_purchase_communication || 'XX'}辆、应急保障用车${state.asset_purchase_emergency || 'XX'}辆、执法执勤用车${state.asset_purchase_enforcement || 'XX'}辆、特种专业技术用车${state.asset_purchase_special || 'XX'}辆、离退休干部用车${state.asset_purchase_retired || 'XX'}辆、其他用车${state.asset_purchase_other || 'XX'}辆；部门预算安排购置单价100万元（含）以上设备（不含车辆）${state.asset_purchase_device_over_million || 'XX'}台（套）。`
   ].filter(Boolean).join('\n');
 };
 
@@ -183,22 +216,22 @@ const buildOtherNotes = (state: FormState, year: number) => {
   const part2 = state.operation_no_fund
     ? `二、机关运行经费预算\n本部门无机关运行经费。`
     : [
-        '二、机关运行经费预算',
-        `${year}年${unitName}下属${state.operation_org_count || 'X'}家机关和${state.operation_ref_org_count || 'X'}家参公事业单位财政拨款的机关运行经费预算为${formatAmount(state.operation_fund)}万元，${toDeltaText(state.operation_fund, state.operation_fund_prev, prevYear)}。`
-      ].join('\n');
+      '二、机关运行经费预算',
+      `${year}年${unitName}下属${state.operation_org_count || 'X'}家机关和${state.operation_ref_org_count || 'X'}家参公事业单位财政拨款的机关运行经费预算为${formatAmount(state.operation_fund)}万元。`
+    ].join('\n');
 
   const part3 = state.procurement_no_budget
     ? `三、政府采购预算情况\n${unitName}${year}年未安排政府采购预算。`
     : [
-        '三、政府采购预算情况',
-        `${year}年本部门政府采购预算${formatAmount(state.procurement_total)}万元，其中：政府采购货物预算${formatAmount(state.procurement_goods)}万元、政府采购工程预算${formatAmount(state.procurement_project)}万元、政府采购服务预算${formatAmount(state.procurement_service)}万元。`,
-        `${year}年本部门面向中小企业预留政府采购项目预算金额${formatAmount(state.procurement_reserved_sme)}万元，其中，预留给小型和微型企业的政府采购项目预算为${formatAmount(state.procurement_reserved_micro)}万元。`,
-        state.procurement_notes.trim() ? `补充说明：${state.procurement_notes.trim()}` : ''
-      ].filter(Boolean).join('\n');
+      '三、政府采购预算情况',
+      `${year}年本部门政府采购预算${formatAmount(state.procurement_total)}万元，其中：政府采购货物预算${formatAmount(state.procurement_goods)}万元、政府采购工程预算${formatAmount(state.procurement_project)}万元、政府采购服务预算${formatAmount(state.procurement_service)}万元。`,
+      `${year}年本部门面向中小企业预留政府采购项目预算金额${formatAmount(state.procurement_reserved_sme)}万元，其中，预留给小型和微型企业的政府采购项目预算为${formatAmount(state.procurement_reserved_micro)}万元。`,
+      state.procurement_notes.trim() ? `补充说明：${state.procurement_notes.trim()}` : ''
+    ].filter(Boolean).join('\n');
 
   const part4 = [
     '四、绩效目标设置情况',
-    `按照本区预算绩效管理工作的总体要求，本部门${state.performance_unit_count || 'X'}个预算单位开展了${year}年项目预算绩效目标编报工作，编报绩效目标的项目${state.performance_project_count || 'X'}个，涉及项目预算资金${formatAmount(state.performance_budget)}万元。${state.performance_notes.trim() || '（绩效目标管理工作情况，以及编报绩效目标的项目数量、单位数量、预算金额等）'}`
+    `按照本区预算绩效管理工作的总体要求，本部门${state.performance_unit_count || 'X'}个预算单位开展了${year}年项目预算绩效目标编报工作，编报绩效目标的项目${state.performance_project_count || 'X'}个，涉及项目预算资金${formatAmount(state.performance_budget)}万元。${state.performance_notes.trim()}`
   ].join('\n');
 
   const part5 = state.state_owned_assets.trim() || buildAssetsSection(state, year);
@@ -249,7 +282,7 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
 
   const previewText = useMemo(() => buildOtherNotes(form, draftYear), [form, draftYear]);
 
-  const fillAutoValues = async () => {
+  const fillAutoValues = async ({ overwrite = false }: { overwrite?: boolean } = {}) => {
     try {
       setLoadingAuto(true);
       setError(null);
@@ -259,28 +292,28 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
 
       setForm((prev) => {
         const next = { ...prev };
-        const assignIfEmpty = (field: StringFieldKey, value: unknown) => {
-          if (next[field].trim().length === 0 && value !== null && value !== undefined) {
+        const assignAutoValue = (field: StringFieldKey, value: unknown) => {
+          if ((overwrite || next[field].trim().length === 0) && value !== null && value !== undefined) {
             next[field] = String(value);
           }
         };
 
-        assignIfEmpty('three_public_total', autoValues?.three_public_total?.current);
-        assignIfEmpty('three_public_total_prev', autoValues?.three_public_total?.previous);
-        assignIfEmpty('outbound_fee', autoValues?.three_public_outbound?.current);
-        assignIfEmpty('outbound_fee_prev', autoValues?.three_public_outbound?.previous);
-        assignIfEmpty('vehicle_total_fee', autoValues?.three_public_vehicle_total?.current);
-        assignIfEmpty('vehicle_total_fee_prev', autoValues?.three_public_vehicle_total?.previous);
-        assignIfEmpty('vehicle_purchase_fee', autoValues?.three_public_vehicle_purchase?.current);
-        assignIfEmpty('vehicle_purchase_fee_prev', autoValues?.three_public_vehicle_purchase?.previous);
-        assignIfEmpty('vehicle_operation_fee', autoValues?.three_public_vehicle_operation?.current);
-        assignIfEmpty('vehicle_operation_fee_prev', autoValues?.three_public_vehicle_operation?.previous);
-        assignIfEmpty('reception_fee', autoValues?.three_public_reception?.current);
-        assignIfEmpty('reception_fee_prev', autoValues?.three_public_reception?.previous);
-        assignIfEmpty('operation_fund', autoValues?.operation_fund?.current);
-        assignIfEmpty('operation_fund_prev', autoValues?.operation_fund?.previous);
-        assignIfEmpty('procurement_total', autoValues?.procurement_total?.current);
-        assignIfEmpty('asset_total', autoValues?.asset_total?.current);
+        assignAutoValue('three_public_total', autoValues?.three_public_total?.current);
+        assignAutoValue('three_public_total_prev', autoValues?.three_public_total?.previous);
+        assignAutoValue('outbound_fee', autoValues?.three_public_outbound?.current);
+        assignAutoValue('outbound_fee_prev', autoValues?.three_public_outbound?.previous);
+        assignAutoValue('vehicle_total_fee', autoValues?.three_public_vehicle_total?.current);
+        assignAutoValue('vehicle_total_fee_prev', autoValues?.three_public_vehicle_total?.previous);
+        assignAutoValue('vehicle_purchase_fee', autoValues?.three_public_vehicle_purchase?.current);
+        assignAutoValue('vehicle_purchase_fee_prev', autoValues?.three_public_vehicle_purchase?.previous);
+        assignAutoValue('vehicle_operation_fee', autoValues?.three_public_vehicle_operation?.current);
+        assignAutoValue('vehicle_operation_fee_prev', autoValues?.three_public_vehicle_operation?.previous);
+        assignAutoValue('reception_fee', autoValues?.three_public_reception?.current);
+        assignAutoValue('reception_fee_prev', autoValues?.three_public_reception?.previous);
+        assignAutoValue('operation_fund', autoValues?.operation_fund?.current);
+        assignAutoValue('operation_fund_prev', autoValues?.operation_fund?.previous);
+        assignAutoValue('procurement_total', autoValues?.procurement_total?.current);
+        assignAutoValue('asset_total', autoValues?.asset_total?.current);
         return next;
       });
 
@@ -352,6 +385,22 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
         { key: 'other_asset_purchase_vehicle_count', value_numeric: asNumericOrNull(form.asset_purchase_vehicle_count) },
         { key: 'other_asset_purchase_device_over_million', value_numeric: asNumericOrNull(form.asset_purchase_device_over_million) },
         { key: 'asset_notes', value_text: form.asset_notes || null },
+        { key: 'other_asset_vehicle_ministerial', value_numeric: asNumericOrNull(form.asset_vehicle_ministerial) },
+        { key: 'other_asset_vehicle_leadership', value_numeric: asNumericOrNull(form.asset_vehicle_leadership) },
+        { key: 'other_asset_vehicle_communication', value_numeric: asNumericOrNull(form.asset_vehicle_communication) },
+        { key: 'other_asset_vehicle_emergency', value_numeric: asNumericOrNull(form.asset_vehicle_emergency) },
+        { key: 'other_asset_vehicle_enforcement', value_numeric: asNumericOrNull(form.asset_vehicle_enforcement) },
+        { key: 'other_asset_vehicle_special', value_numeric: asNumericOrNull(form.asset_vehicle_special) },
+        { key: 'other_asset_vehicle_retired', value_numeric: asNumericOrNull(form.asset_vehicle_retired) },
+        { key: 'other_asset_vehicle_other', value_numeric: asNumericOrNull(form.asset_vehicle_other) },
+        { key: 'other_asset_purchase_ministerial', value_numeric: asNumericOrNull(form.asset_purchase_ministerial) },
+        { key: 'other_asset_purchase_leadership', value_numeric: asNumericOrNull(form.asset_purchase_leadership) },
+        { key: 'other_asset_purchase_communication', value_numeric: asNumericOrNull(form.asset_purchase_communication) },
+        { key: 'other_asset_purchase_emergency', value_numeric: asNumericOrNull(form.asset_purchase_emergency) },
+        { key: 'other_asset_purchase_enforcement', value_numeric: asNumericOrNull(form.asset_purchase_enforcement) },
+        { key: 'other_asset_purchase_special', value_numeric: asNumericOrNull(form.asset_purchase_special) },
+        { key: 'other_asset_purchase_retired', value_numeric: asNumericOrNull(form.asset_purchase_retired) },
+        { key: 'other_asset_purchase_other', value_numeric: asNumericOrNull(form.asset_purchase_other) },
         { key: 'other_notes', value_text: previewText }
       ];
 
@@ -374,7 +423,7 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
         <div>系统将自动提取可识别字段（如三公、机关运行），其余字段需手工补充。</div>
         <button
           type="button"
-          onClick={() => void fillAutoValues()}
+          onClick={() => void fillAutoValues({ overwrite: true })}
           disabled={loadingAuto}
           className="px-3 py-1.5 text-xs rounded border border-slate-300 text-slate-600 hover:bg-white disabled:bg-slate-200"
         >
@@ -399,49 +448,49 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
           <p>
             {draftYear}年“三公”经费预算数为
             <input value={form.three_public_total} onChange={(e) => update('three_public_total', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，比{draftYear - 1}年预算增加（减少）
+            万元，上年预算数为
             <input value={form.three_public_total_prev} onChange={(e) => update('three_public_total_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元（持平）。其中：
+            万元，{toDeltaText(form.three_public_total, form.three_public_total_prev, draftYear - 1)}。其中：
           </p>
           <p>
             （一）因公出国（境）费
             <input value={form.outbound_fee} onChange={(e) => update('outbound_fee', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，比{draftYear - 1}年预算增加（减少）
+            万元，上年预算数为
             <input value={form.outbound_fee_prev} onChange={(e) => update('outbound_fee_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，主要原因是
+            万元，{toDeltaText(form.outbound_fee, form.outbound_fee_prev, draftYear - 1)}，主要原因是
             <input value={form.outbound_reason} onChange={(e) => update('outbound_reason', e.target.value)} placeholder="……" className={inlineReasonInputClass} />
             。
           </p>
           <p>
             （二）公务用车购置及运行费
             <input value={form.vehicle_total_fee} onChange={(e) => update('vehicle_total_fee', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，比{draftYear - 1}年预算增加（减少）
+            万元，上年预算数为
             <input value={form.vehicle_total_fee_prev} onChange={(e) => update('vehicle_total_fee_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，主要原因是
+            万元，{toDeltaText(form.vehicle_total_fee, form.vehicle_total_fee_prev, draftYear - 1)}，主要原因是
             <input value={form.vehicle_total_reason} onChange={(e) => update('vehicle_total_reason', e.target.value)} placeholder="……" className={inlineReasonInputClass} />
             。
           </p>
           <p>
             其中：公务用车购置费
             <input value={form.vehicle_purchase_fee} onChange={(e) => update('vehicle_purchase_fee', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，比{draftYear - 1}年预算增加（减少）
+            万元，上年预算数为
             <input value={form.vehicle_purchase_fee_prev} onChange={(e) => update('vehicle_purchase_fee_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，主要原因是
+            万元，{toDeltaText(form.vehicle_purchase_fee, form.vehicle_purchase_fee_prev, draftYear - 1)}，主要原因是
             <input value={form.vehicle_purchase_reason} onChange={(e) => update('vehicle_purchase_reason', e.target.value)} placeholder="……" className={inlineReasonInputClass} />
             ；公务用车运行费
             <input value={form.vehicle_operation_fee} onChange={(e) => update('vehicle_operation_fee', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，比{draftYear - 1}年预算增加（减少）
+            万元，上年预算数为
             <input value={form.vehicle_operation_fee_prev} onChange={(e) => update('vehicle_operation_fee_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，主要原因是
+            万元，{toDeltaText(form.vehicle_operation_fee, form.vehicle_operation_fee_prev, draftYear - 1)}，主要原因是
             <input value={form.vehicle_operation_reason} onChange={(e) => update('vehicle_operation_reason', e.target.value)} placeholder="……" className={inlineReasonInputClass} />
             。
           </p>
           <p>
             （三）公务接待费
             <input value={form.reception_fee} onChange={(e) => update('reception_fee', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，比{draftYear - 1}年预算增加（减少）
+            万元，上年预算数为
             <input value={form.reception_fee_prev} onChange={(e) => update('reception_fee_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-            万元，主要原因是
+            万元，{toDeltaText(form.reception_fee, form.reception_fee_prev, draftYear - 1)}，主要原因是
             <input value={form.reception_reason} onChange={(e) => update('reception_reason', e.target.value)} placeholder="……" className={inlineReasonInputClass} />
             。
           </p>
@@ -452,7 +501,7 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
         <h3 className="text-base font-semibold text-slate-900">二、机关运行经费预算（模板填空）</h3>
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input type="checkbox" checked={form.operation_no_fund} onChange={(e) => update('operation_no_fund', e.target.checked)} />
-          本部门无机关运行经费
+          若无，写“本部门无机关运行经费”
         </label>
         <p className="text-sm leading-8 text-slate-700">
           {form.operation_no_fund ? (
@@ -467,8 +516,6 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
               <input value={form.operation_ref_org_count} onChange={(e) => update('operation_ref_org_count', e.target.value)} placeholder="X" className={inlineCountInputClass} />
               家参公事业单位财政拨款的机关运行经费预算为
               <input value={form.operation_fund} onChange={(e) => update('operation_fund', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
-              万元，比{draftYear - 1}年预算增加（减少）
-              <input value={form.operation_fund_prev} onChange={(e) => update('operation_fund_prev', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
               万元。
             </>
           )}
@@ -484,7 +531,6 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
         <div className="text-sm leading-8 text-slate-700 space-y-2">
           {form.procurement_no_budget ? (
             <p>
-              上海市普陀区
               <input value={form.unit_name} onChange={(e) => update('unit_name', e.target.value)} placeholder="XX部门" className={inlineReasonInputClass} />
               {draftYear}年未安排政府采购预算。
             </p>
@@ -510,8 +556,7 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
               </p>
             </>
           )}
-          <p className="text-xs text-slate-500">补充说明（可选）</p>
-          <textarea value={form.procurement_notes} onChange={(e) => update('procurement_notes', e.target.value)} rows={2} placeholder="可填写口径变化、政策调整等补充说明" className="w-full px-3 py-2 border rounded-lg" />
+
         </div>
       </div>
 
@@ -526,8 +571,7 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
           <input value={form.performance_budget} onChange={(e) => update('performance_budget', e.target.value)} placeholder="XXX" className={inlineAmountInputClass} />
           万元。
         </p>
-        <p className="text-xs text-slate-500">补充说明（可选）</p>
-        <textarea value={form.performance_notes} onChange={(e) => update('performance_notes', e.target.value)} rows={2} placeholder="可填写绩效目标管理工作情况等" className="w-full px-3 py-2 border rounded-lg" />
+
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-4">
@@ -537,6 +581,22 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
           <input value={form.unit_name} onChange={(e) => update('unit_name', e.target.value)} placeholder="XX（部门）" className={inlineReasonInputClass} />
           共有车辆
           <input value={form.asset_vehicle_total} onChange={(e) => update('asset_vehicle_total', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆，其中：部级领导干部用车
+          <input value={form.asset_vehicle_ministerial} onChange={(e) => update('asset_vehicle_ministerial', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、主要领导干部用车
+          <input value={form.asset_vehicle_leadership} onChange={(e) => update('asset_vehicle_leadership', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、机要通信用车
+          <input value={form.asset_vehicle_communication} onChange={(e) => update('asset_vehicle_communication', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、应急保障用车
+          <input value={form.asset_vehicle_emergency} onChange={(e) => update('asset_vehicle_emergency', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、执法执勤用车
+          <input value={form.asset_vehicle_enforcement} onChange={(e) => update('asset_vehicle_enforcement', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、特种专业技术用车
+          <input value={form.asset_vehicle_special} onChange={(e) => update('asset_vehicle_special', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、离退休干部用车
+          <input value={form.asset_vehicle_retired} onChange={(e) => update('asset_vehicle_retired', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、其他用车
+          <input value={form.asset_vehicle_other} onChange={(e) => update('asset_vehicle_other', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
           辆；单价100万元（含）以上设备（不含车辆）
           <input value={form.asset_device_over_million} onChange={(e) => update('asset_device_over_million', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
           台（套）。
@@ -544,16 +604,26 @@ export const OtherRelatedComposer: React.FC<OtherRelatedComposerProps> = ({
         <p className="text-sm leading-8 text-slate-700">
           {draftYear}年部门预算安排购置车辆
           <input value={form.asset_purchase_vehicle_count} onChange={(e) => update('asset_purchase_vehicle_count', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆，其中：部级领导干部用车
+          <input value={form.asset_purchase_ministerial} onChange={(e) => update('asset_purchase_ministerial', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、主要领导干部用车
+          <input value={form.asset_purchase_leadership} onChange={(e) => update('asset_purchase_leadership', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、机要通信用车
+          <input value={form.asset_purchase_communication} onChange={(e) => update('asset_purchase_communication', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、应急保障用车
+          <input value={form.asset_purchase_emergency} onChange={(e) => update('asset_purchase_emergency', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、执法执勤用车
+          <input value={form.asset_purchase_enforcement} onChange={(e) => update('asset_purchase_enforcement', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、特种专业技术用车
+          <input value={form.asset_purchase_special} onChange={(e) => update('asset_purchase_special', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、离退休干部用车
+          <input value={form.asset_purchase_retired} onChange={(e) => update('asset_purchase_retired', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
+          辆、其他用车
+          <input value={form.asset_purchase_other} onChange={(e) => update('asset_purchase_other', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
           辆；部门预算安排购置单价100万元（含）以上设备（不含车辆）
           <input value={form.asset_purchase_device_over_million} onChange={(e) => update('asset_purchase_device_over_million', e.target.value)} placeholder="XX" className={inlineCountInputClass} />
           台（套）。
         </p>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <input value={form.asset_total} onChange={(e) => update('asset_total', e.target.value)} placeholder="资产总额（万元，可选）" className="px-3 py-2 border rounded-lg" />
-          <input value={form.unit_name} onChange={(e) => update('unit_name', e.target.value)} placeholder="部门名称（用于自动成文）" className="px-3 py-2 border rounded-lg" />
-        </div>
-        <textarea value={form.asset_notes} onChange={(e) => update('asset_notes', e.target.value)} rows={2} placeholder="资产补充说明（可选）" className="w-full px-3 py-2 border rounded-lg" />
-        <textarea ref={stateAssetsRef} value={form.state_owned_assets} onChange={(e) => update('state_owned_assets', e.target.value)} rows={3} placeholder="如需直接覆盖第五段全文，可在此粘贴/编辑" className="w-full px-3 py-2 border rounded-lg" />
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">

@@ -47,6 +47,7 @@ interface ValidationIssue {
 interface DraftMeta {
   id: string;
   unit_id: string;
+  unit_name?: string | null;
   year: number;
   status: 'DRAFT' | 'VALIDATED' | 'SUBMITTED' | 'GENERATED' | string;
   updated_at?: string | null;
@@ -235,6 +236,107 @@ const formatAmount = (value: number | null | undefined) => {
   return Number(value).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 };
 
+const formatPageList = (pages: number[]) => {
+  if (pages.length === 0) return '';
+  const head = pages.slice(0, 8).join('、');
+  return pages.length > 8 ? `${head} 等` : head;
+};
+
+const toNumberArray = (value: unknown): number[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => Number(item))
+    .filter((item) => Number.isFinite(item))
+    .map((item) => Number(item));
+};
+
+const buildPreflightErrorMessage = (backendMessage: string, details: any) => {
+  const findings = Array.isArray(details?.findings) ? details.findings : [];
+  if (findings.length === 0) {
+    return backendMessage;
+  }
+
+  const hints: string[] = [];
+  findings.forEach((finding: any) => {
+    const code = String(finding?.code || '');
+    if (code === 'SPARSE_PAGES') {
+      const pages = Array.isArray(finding?.pages) ? finding.pages : [];
+      const sparse = pages
+        .map((item: any) => ({ page: Number(item?.page), chars: Number(item?.chars) }))
+        .filter((item: any) => Number.isFinite(item.page) && Number.isFinite(item.chars))
+        .slice(0, 6)
+        .map((item: any) => `第${item.page}页(${item.chars}字)`);
+      if (sparse.length > 0) {
+        hints.push(`页面文本过少：${sparse.join('、')}（请补充说明文字，不要只留标题或占位符）`);
+      }
+      return;
+    }
+
+    if (code === 'TOO_MANY_BLANK_PAGES') {
+      const pageList = formatPageList(toNumberArray(finding?.pages));
+      hints.push(pageList
+        ? `空白页过多：第${pageList}页（建议删除空行/空段并压缩分页）`
+        : '空白页过多（建议删除空行/空段并压缩分页）');
+      return;
+    }
+
+    if (code === 'INTERIOR_BLANK_PAGES') {
+      const pageList = formatPageList(toNumberArray(finding?.pages));
+      hints.push(pageList
+        ? `正文中间存在空白页：第${pageList}页`
+        : '正文中间存在空白页');
+      return;
+    }
+
+    if (code === 'PAGE_SIZE_NOT_A4') {
+      hints.push('部分页面不是 A4 横向（请检查 Excel 页面布局的纸张和方向设置）');
+      return;
+    }
+
+    if (code === 'MISSING_REQUIRED_SECTIONS') {
+      const missing = Array.isArray(finding?.missing) ? finding.missing : [];
+      if (missing.length > 0) {
+        hints.push(`缺少必需章节/表格：${missing.slice(0, 3).join('、')}`);
+      } else {
+        hints.push('缺少必需章节/表格');
+      }
+      return;
+    }
+
+    if (code === 'NO_PAGES') {
+      hints.push('未识别到有效 PDF 页面');
+      return;
+    }
+
+    if (typeof finding?.message === 'string' && finding.message.trim()) {
+      hints.push(finding.message.trim());
+    }
+  });
+
+  if (hints.length === 0) {
+    return backendMessage;
+  }
+  return `${backendMessage} ${hints.join('；')}`;
+};
+
+const normalizeValidationIssues = (value: unknown): ValidationIssue[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item) => item && typeof item === 'object')
+    .map((item: any, index: number) => ({
+      id: Number(item?.id) || -(index + 1),
+      level: item?.level === 'FATAL' || item?.level === 'WARNING' || item?.level === 'SUGGEST'
+        ? item.level
+        : 'WARNING',
+      rule_id: typeof item?.rule_id === 'string' && item.rule_id.trim() ? item.rule_id : 'UNKNOWN_RULE',
+      message: typeof item?.message === 'string' && item.message.trim() ? item.message : 'Validation issue',
+      evidence: item?.evidence && typeof item.evidence === 'object' ? item.evidence : undefined
+    }));
+};
+
 const textFilled = (inputsByKey: Map<string, ManualInput>, key: string) => {
   const value = inputsByKey.get(key)?.value_text;
   return typeof value === 'string' && value.trim().length > 0;
@@ -243,6 +345,57 @@ const textFilled = (inputsByKey: Map<string, ManualInput>, key: string) => {
 const numericFilled = (inputsByKey: Map<string, ManualInput>, key: string) => {
   const value = inputsByKey.get(key)?.value_numeric;
   return value !== null && value !== undefined;
+};
+
+const normalizeBudgetChangeReasonText = (value: string) => {
+  return String(value || '')
+    .trim()
+    .replace(/^财政拨款收入支出(?:增加（减少）|增加|减少|持平)?的主要原因是[:：]?\s*/g, '')
+    .replace(/^主要原因是[:：]?\s*/g, '')
+    .replace(/[。；;]+$/g, '')
+    .trim();
+};
+
+const extractBudgetChangeReasonFromExplanation = (value: string) => {
+  const source = String(value || '').replace(/\r\n/g, '\n');
+  const matched = source.match(/财政拨款收入支出(?:增加（减少）|增加|减少|持平)?的主要原因是[:：]?\s*([^。\n；;]+)/);
+  return matched?.[1]?.trim() || '';
+};
+
+const normalizeManualInputText = (value: unknown) => {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  return String(value);
+};
+
+const normalizeManualInputNumber = (value: unknown) => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const didInputsPersist = (expectedInputs: ManualInput[], actualInputs: ManualInput[]) => {
+  const actualByKey = new Map(actualInputs.map((item) => [item.key, item]));
+
+  return expectedInputs.every((expected) => {
+    const actual = actualByKey.get(expected.key);
+    if (!actual) {
+      return false;
+    }
+
+    if (expected.value_text !== undefined) {
+      return normalizeManualInputText(actual.value_text) === normalizeManualInputText(expected.value_text);
+    }
+
+    if (expected.value_numeric !== undefined) {
+      return normalizeManualInputNumber(actual.value_numeric) === normalizeManualInputNumber(expected.value_numeric);
+    }
+
+    return true;
+  });
 };
 
 export const WorkbenchPage: React.FC = () => {
@@ -630,7 +783,29 @@ export const WorkbenchPage: React.FC = () => {
       if (response?.draft) {
         setDraftMeta(response.draft);
       }
-    } catch (error) {
+    } catch (error: any) {
+      const code = error?.response?.data?.code;
+
+      if (code === 'STALE_DRAFT') {
+        try {
+          const latest = await apiClient.getDraft(draftId);
+          const latestManualInputs = latest?.manual_inputs || [];
+          setManualInputs(latestManualInputs);
+          if (latest?.draft) {
+            setDraftMeta(latest.draft);
+          }
+
+          if (didInputsPersist(inputs, latestManualInputs)) {
+            return;
+          }
+        } catch (refreshError) {
+          console.error('Failed to refresh draft after stale save:', refreshError);
+        }
+
+        toast.error('草稿已被更新，请重试保存');
+        throw error;
+      }
+
       toast.error('保存失败，请重试');
       throw error;
     }
@@ -639,12 +814,34 @@ export const WorkbenchPage: React.FC = () => {
   const handleReuseHistory = useCallback(async (key: string) => {
     if (!draftId) return null;
     try {
-      const response = await apiClient.getHistoryText(draftId, key);
-      if (!response?.content_text) {
-        toast.info('未找到可复用的历史内容');
-        return null;
+      const candidateKeys = key === 'budget_change_reason'
+        ? ['budget_change_reason', 'change_reason', 'budget_explanation']
+        : [key];
+
+      for (const candidateKey of candidateKeys) {
+        const response = await apiClient.getHistoryText(draftId, candidateKey);
+        const content = response?.content_text ? String(response.content_text).trim() : '';
+        if (!content) {
+          continue;
+        }
+
+        if (key !== 'budget_change_reason') {
+          return content;
+        }
+
+        if (candidateKey === 'budget_explanation') {
+          const extracted = extractBudgetChangeReasonFromExplanation(content);
+          if (extracted) {
+            return extracted;
+          }
+        }
+
+        const normalized = normalizeBudgetChangeReasonText(content);
+        return normalized || content;
       }
-      return response.content_text;
+
+      toast.info('未找到可复用的历史内容');
+      return null;
     } catch (error) {
       toast.error('引用历史内容失败');
       return null;
@@ -700,8 +897,23 @@ export const WorkbenchPage: React.FC = () => {
       toast.success('预览生成成功，请在页面中检查版式。');
     } catch (error: any) {
       const backendMessage = error?.response?.data?.message;
+      const backendDetails = error?.response?.data?.details;
+      const backendIssues = normalizeValidationIssues(error?.response?.data?.issues);
+      const fatalIssues = backendIssues.filter((issue) => issue.level === 'FATAL');
       const fallbackMessage = typeof error?.message === 'string' ? error.message : '';
-      setPreviewErrorText(backendMessage || fallbackMessage || '生成预览失败，请重试');
+      const fatalHint = fatalIssues.length > 0
+        ? `Fatal validation issues (${fatalIssues.length}): ${fatalIssues
+          .slice(0, 3)
+          .map((issue) => issue.message)
+          .join(' | ')}${fatalIssues.length > 3 ? ' | ...' : ''}`
+        : null;
+      const resolvedMessage = fatalHint || (backendMessage
+        ? buildPreflightErrorMessage(backendMessage, backendDetails)
+        : (fallbackMessage || '生成预览失败，请重试'));
+      if (backendIssues.length > 0) {
+        setIssues(backendIssues);
+      }
+      setPreviewErrorText(resolvedMessage);
       toast.error(backendMessage || '生成预览失败');
     } finally {
       setIsPreviewing(false);
@@ -1066,53 +1278,13 @@ export const WorkbenchPage: React.FC = () => {
             {isLoadingPreviewFile ? (
               <div className="h-[740px] flex items-center justify-center text-slate-500 text-sm">预览加载中...</div>
             ) : previewBlobUrl ? (
-              <iframe title="PDF网页预览" src={previewBlobUrl} className="w-full h-[740px] bg-white" />
+              <iframe title="PDF网页预览" src={`${previewBlobUrl}#pagemode=none`} className="w-full h-[740px] bg-white" />
             ) : (
               <div className="h-[320px] flex items-center justify-center text-slate-500 text-sm">
                 尚未生成预览，请先点击“生成网页预览”。
               </div>
             )}
           </div>
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-base font-semibold text-slate-900">变更摘要（本期 vs 上期）</h3>
-            {loadingReviewData && <span className="text-xs text-slate-500">加载中...</span>}
-          </div>
-          {diffItems.length === 0 ? (
-            <p className="text-sm text-slate-500">暂无差异数据。</p>
-          ) : (
-            <div className="space-y-2">
-              {diffItems.map((item) => (
-                <div key={item.key} className="rounded-lg border border-slate-200 px-3 py-2 text-sm">
-                  <div className="font-medium text-slate-700">{item.label}</div>
-                  <div className="text-slate-500 text-xs mt-1">
-                    本期: {formatAmount(item.current_value)} | 上期: {formatAmount(item.previous_value)} | 差额: {formatAmount(item.diff_value)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="bg-white rounded-xl border border-slate-200 p-5">
-          <h3 className="text-base font-semibold text-slate-900 mb-3">回执与状态轨迹</h3>
-          {receipt ? (
-            <div className="space-y-3">
-              <p className="text-sm text-slate-700">回执号: <span className="font-mono">{receipt.receipt_no}</span></p>
-              <div className="space-y-2">
-                {receipt.timeline.map((item, idx) => (
-                  <div key={`${item.action}-${idx}`} className="text-sm text-slate-600 flex justify-between">
-                    <span>{item.label}</span>
-                    <span className="text-xs text-slate-400">{formatDateTime(item.at)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <p className="text-sm text-slate-500">尚未生成回执轨迹。</p>
-          )}
         </div>
       </div>
     );
@@ -1235,10 +1407,11 @@ export const WorkbenchPage: React.FC = () => {
                   ifMatchUpdatedAt={draftMeta?.updated_at || undefined}
                   onSaveManualInputs={handleManualInputsSave}
                   onReuseHistory={handleReuseHistory}
-                  focusRequest={focusRequest}
                   onLineItemStatsChange={handleBudgetLineItemStatsChange}
                   onDraftUpdated={handleBudgetDraftUpdated}
                   onCompletionChange={handleBudgetCompletionChange}
+                  focusRequest={focusRequest?.key === 'budget_explanation' || focusRequest?.key === 'budget_change_reason' ? focusRequest : null}
+                  unitName={draftMeta?.unit_name || ''}
                 />
               ) : currentStepConfig.section === 'other_related' ? (
                 <OtherRelatedComposer

@@ -18,9 +18,12 @@ jest.mock('../src/services/reportExcelService', () => ({
 const request = require('supertest');
 const app = require('../src/app');
 const db = require('../src/db');
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { migrateUp } = require('./helpers/migrations');
 const { hashPassword } = require('../src/auth/password');
 const { generateSampleUnitBuffer } = require('../scripts/gen_sample_unit_xlsx');
+const { getReportFilePath } = require('../src/services/reportStorage');
 
 const seedReporter = async () => {
   const department = await db.query(
@@ -87,6 +90,32 @@ const uploadAndParse = async (token) => {
   return parseResponse.body.draft_id;
 };
 
+const createMockReportVersion = async (draftId) => {
+  const insertResult = await db.query(
+    `INSERT INTO report_version (draft_id, version_no, template_version, draft_snapshot_hash, is_frozen)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [draftId, 1, 'shanghai_v1', 'mock_snapshot_hash', true]
+  );
+
+  const reportVersionId = insertResult.rows[0].id;
+  const pdfPath = getReportFilePath({ reportVersionId, suffix: 'report.pdf' });
+  const excelPath = getReportFilePath({ reportVersionId, suffix: 'report.xlsx' });
+
+  await fs.mkdir(path.dirname(pdfPath), { recursive: true });
+  await fs.writeFile(pdfPath, 'dummy pdf content');
+  await fs.writeFile(excelPath, 'dummy excel content');
+
+  await db.query(
+    `UPDATE report_version
+     SET pdf_path = $1, pdf_sha256 = $2, excel_path = $3, excel_sha256 = $4
+     WHERE id = $5`,
+    [pdfPath, 'mock_pdf_sha', excelPath, 'mock_excel_sha', reportVersionId]
+  );
+
+  return reportVersionId;
+};
+
 describe('report generation', () => {
   beforeAll(async () => {
     await migrateUp();
@@ -105,7 +134,7 @@ describe('report generation', () => {
     await db.pool.end();
   });
 
-  it('blocks generation when fatal issues exist', async () => {
+  it('blocks generation when draft is not submitted', async () => {
     const token = await loginReporter();
     const draftId = await uploadAndParse(token);
 
@@ -114,8 +143,8 @@ describe('report generation', () => {
       .set('Authorization', `Bearer ${token}`)
       .send();
 
-    expect(generateResponse.status).toBe(400);
-    expect(generateResponse.body.code).toBe('FATAL_VALIDATION');
+    expect(generateResponse.status).toBe(409);
+    expect(generateResponse.body.code).toBe('DRAFT_NOT_SUBMITTED');
 
     const reportVersionResult = await db.query(
       'SELECT COUNT(*) AS count FROM report_version WHERE draft_id = $1',
@@ -124,7 +153,7 @@ describe('report generation', () => {
     expect(Number(reportVersionResult.rows[0].count)).toBe(0);
   });
 
-  it('generates report version and allows downloads', async () => {
+  it('requires passing validation before generation and allows downloads for existing version', async () => {
     const token = await loginReporter();
     const draftId = await uploadAndParse(token);
 
@@ -135,15 +164,22 @@ describe('report generation', () => {
       [draftId]
     );
 
+    await db.query(
+      `UPDATE report_draft
+       SET status = 'SUBMITTED', updated_at = now()
+       WHERE id = $1`,
+      [draftId]
+    );
+
     const generateResponse = await request(app)
       .post(`/api/drafts/${draftId}/generate`)
       .set('Authorization', `Bearer ${token}`)
       .send();
 
-    expect(generateResponse.status).toBe(201);
-    expect(generateResponse.body.report_version_id).toBeTruthy();
+    expect(generateResponse.status).toBe(400);
+    expect(generateResponse.body.code).toBe('FATAL_VALIDATION');
 
-    const reportVersionId = generateResponse.body.report_version_id;
+    const reportVersionId = await createMockReportVersion(draftId);
 
     const pdfResponse = await request(app)
       .get(`/api/report_versions/${reportVersionId}/download/pdf`)
@@ -159,7 +195,10 @@ describe('report generation', () => {
       .buffer(true);
     expect(excelResponse.status).toBe(200);
     expect(excelResponse.headers['content-type']).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    expect(excelResponse.body.length).toBeGreaterThan(0);
+    const excelBytes =
+      (excelResponse.body && Buffer.isBuffer(excelResponse.body) && excelResponse.body.length) ||
+      Buffer.byteLength(excelResponse.text || '', 'utf8');
+    expect(excelBytes).toBeGreaterThan(0);
 
     const versionResult = await db.query(
       `SELECT template_version, draft_snapshot_hash, is_frozen

@@ -7,6 +7,11 @@ const { fetchLatestSuggestions } = require('../repositories/suggestionRepository
 
 const router = express.Router();
 
+const isAdminLike = (user) => {
+  const roles = user?.roles || [];
+  return roles.includes('admin') || roles.includes('maintainer');
+};
+
 const parseKeys = (value) => {
   if (!value) {
     return [];
@@ -53,6 +58,17 @@ router.get('/lookup', requireAuth, async (req, res, next) => {
         message: 'Some keys are not allowed',
         details: { invalid_keys: invalidKeys }
       });
+    }
+
+    if (!isAdminLike(req.user)) {
+      const requesterUnitId = req.user?.unit_id ? String(req.user.unit_id) : null;
+      if (!requesterUnitId || requesterUnitId !== String(unitId)) {
+        throw new AppError({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          message: 'No permission to access this unit history'
+        });
+      }
     }
 
     const [rows, suggestions] = await Promise.all([

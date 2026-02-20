@@ -1,5 +1,6 @@
 const express = require('express');
 const crypto = require('node:crypto');
+const path = require('node:path');
 const multer = require('multer');
 const { AppError } = require('../errors');
 const { requireAuth, requireRole } = require('../middleware/auth');
@@ -18,7 +19,39 @@ const {
 } = require('../repositories/historyRepository');
 
 const router = express.Router();
-const upload = multer({ storage: multer.memoryStorage() });
+
+const XLSX_MIME_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/octet-stream',
+  'application/zip'
+]);
+const isValidXlsxUpload = (file) => {
+  const ext = path.extname(file?.originalname || '').toLowerCase();
+  if (ext !== '.xlsx') return false;
+  const mime = String(file?.mimetype || '').toLowerCase();
+  return !mime || XLSX_MIME_TYPES.has(mime);
+};
+const DEFAULT_MAX_IMPORT_MB = 20;
+const configuredImportLimitMb = Number(process.env.HISTORY_IMPORT_MAX_MB || process.env.UPLOAD_MAX_MB || DEFAULT_MAX_IMPORT_MB);
+const maxImportLimitMb = Number.isFinite(configuredImportLimitMb) && configuredImportLimitMb > 0
+  ? configuredImportLimitMb
+  : DEFAULT_MAX_IMPORT_MB;
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: Math.floor(maxImportLimitMb * 1024 * 1024)
+  },
+  fileFilter: (req, file, cb) => {
+    if (!isValidXlsxUpload(file)) {
+      return cb(new AppError({
+        statusCode: 400,
+        code: 'INVALID_FILE_TYPE',
+        message: 'Only .xlsx files are supported'
+      }));
+    }
+    return cb(null, true);
+  }
+});
 
 router.get('/units/:unitId/years', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {

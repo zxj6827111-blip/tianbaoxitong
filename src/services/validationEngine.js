@@ -431,9 +431,17 @@ const rules = [
     description: '必填条目未填写原因',
     tolerance: DEFAULT_TOLERANCE,
     run: (ctx, config) => {
-      const missingItems = (ctx.lineItems || []).filter((item) => (
-        item.reason_required && (!item.reason_text || item.reason_text.trim() === '')
-      ));
+      const missingItems = (ctx.lineItems || []).filter((item) => {
+        if (!item.reason_required) {
+          return false;
+        }
+
+        if (typeof item.reason_is_manual === 'boolean') {
+          return !item.reason_is_manual;
+        }
+
+        return !item.reason_text || item.reason_text.trim() === '';
+      });
 
       return missingItems.map((item) => createIssue({
         level: config.level,
@@ -448,9 +456,18 @@ const rules = [
 
 const getDraftOrThrow = async (draftId, user) => {
   const draftResult = await db.query(
-    `SELECT id, unit_id, year, upload_id, created_by, status, created_at, updated_at
-     FROM report_draft
-     WHERE id = $1`,
+    `SELECT d.id,
+            d.unit_id,
+            d.year,
+            d.upload_id,
+            d.created_by,
+            d.status,
+            d.created_at,
+            d.updated_at,
+            u.name AS unit_name
+     FROM report_draft d
+     LEFT JOIN org_unit u ON u.id = d.unit_id
+     WHERE d.id = $1`,
     [draftId]
   );
 

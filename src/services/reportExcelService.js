@@ -5,27 +5,33 @@ const { ensureReportDir, getReportFilePath } = require('./reportStorage');
 const { fillExcelTemplate } = require('./excelFiller');
 
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
-const TEMPLATE_CANDIDATES = [
-  path.resolve(PROJECT_ROOT, 'templates', 'budget_template.xls'),
-  path.resolve(PROJECT_ROOT, 'X', 'department_template.xls')
-];
+const TEMPLATE_DIR = path.resolve(PROJECT_ROOT, 'templates', 'excel');
+const TEMPLATE_FILE_BY_CALIBER = {
+  unit: 'unit_budget_template.xlsx',
+  department: 'department_budget_template.xlsx'
+};
 
-const resolveTemplatePath = () => {
-  const existing = TEMPLATE_CANDIDATES.find((candidate) => fs.existsSync(candidate));
-  if (existing) {
-    return existing;
+const resolveTemplatePath = (caliber = 'unit') => {
+  const normalizedCaliber = caliber === 'department' ? 'department' : 'unit';
+  const fileName = TEMPLATE_FILE_BY_CALIBER[normalizedCaliber];
+  const templatePath = path.resolve(TEMPLATE_DIR, fileName);
+
+  if (fs.existsSync(templatePath)) {
+    return templatePath;
   }
 
   const error = new Error('No Excel template found for report generation.');
   error.code = 'TEMPLATE_NOT_FOUND';
-  error.candidates = TEMPLATE_CANDIDATES;
+  error.caliber = normalizedCaliber;
+  error.templateDir = TEMPLATE_DIR;
+  error.expectedFile = fileName;
   throw error;
 };
 
-const renderExcel = async ({ values, reportVersionId, draftSnapshotHash, sourcePath, year, suffix = 'report.xls' }) => {
+const renderExcel = async ({ values, reportVersionId, draftSnapshotHash, sourcePath, year, caliber = 'unit', suffix = 'report.xlsx' }) => {
   await ensureReportDir();
-  const excelPath = getReportFilePath({ reportVersionId, suffix }); // Use .xls to match template compatibility
-  const templatePath = resolveTemplatePath();
+  const excelPath = getReportFilePath({ reportVersionId, suffix });
+  const templatePath = resolveTemplatePath(caliber);
 
   try {
     await fillExcelTemplate({
@@ -33,7 +39,8 @@ const renderExcel = async ({ values, reportVersionId, draftSnapshotHash, sourceP
       sourcePath,
       outputPath: excelPath,
       values,
-      year
+      year,
+      caliber
     });
   } catch (error) {
     console.error('Error filling Excel template:', error);

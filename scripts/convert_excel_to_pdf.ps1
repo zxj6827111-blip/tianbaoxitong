@@ -1,4 +1,6 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿# [DEPRECATED] This script is no longer used by the application.
+# Logic has been migrated to src/services/excelPdfService.js using LibreOffice.
+$ErrorActionPreference = 'Stop'
 
 $excelPath = $env:EXCEL_PATH
 $pdfPath = $env:PDF_PATH

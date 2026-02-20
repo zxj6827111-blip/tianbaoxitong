@@ -30,8 +30,13 @@ CLAUDE.md
 SKILL.md
 
 # Temporary files
+.tmp/
 test_output.txt
 staged_status.txt
 staged_status_utf8.txt
 status.txt
 _pdf_finance25_text.txt
+.tmp_jest/
+_cmp_*.txt
+_head_excelFiller_snapshot.js
+draft_*_preview.pdf
