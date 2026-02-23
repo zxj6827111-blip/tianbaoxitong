@@ -75,17 +75,23 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
     // Check for existing upload and delete it (Overwrite strategy)
     // This allows users to re-upload if parsing failed or they want to start over
     const client = await db.pool.connect();
+    let oldFilePathToDelete = null;
+    let newFilePath = null;
     try {
+      await ensureUploadDir();
       await client.query('BEGIN');
 
       // Find existing upload
       const existing = await client.query(
-        'SELECT id FROM upload_job WHERE unit_id = $1 AND year = $2',
+        'SELECT id, file_name FROM upload_job WHERE unit_id = $1 AND year = $2',
         [unitId, year]
       );
 
       if (existing.rowCount > 0) {
         const oldId = existing.rows[0].id;
+        const oldFileName = existing.rows[0].file_name;
+        oldFilePathToDelete = getUploadFilePath(oldId, oldFileName);
+
         // Delete related drafts first (if any)
         await client.query('DELETE FROM report_draft WHERE upload_id = $1', [oldId]);
         // Delete parsed data
@@ -102,13 +108,19 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
         [unitId, year, caliber, req.file.originalname, fileHash, 'UPLOADED', req.user.id]
       );
 
+      const uploadId = insertResult.rows[0].id;
+      newFilePath = getUploadFilePath(uploadId, req.file.originalname);
+      await fs.writeFile(newFilePath, req.file.buffer);
+
       await client.query('COMMIT');
 
-      const uploadId = insertResult.rows[0].id;
-
-      await ensureUploadDir();
-      const filePath = getUploadFilePath(uploadId, req.file.originalname);
-      await fs.writeFile(filePath, req.file.buffer);
+      if (oldFilePathToDelete) {
+        try {
+          await fs.unlink(oldFilePathToDelete);
+        } catch {
+          // Ignore old-file cleanup failure after commit.
+        }
+      }
 
       return res.status(201).json({
         upload_id: uploadId,
@@ -117,7 +129,19 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
       });
 
     } catch (error) {
-      await client.query('ROLLBACK');
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        // Ignore rollback failures when transaction is not active.
+      }
+
+      if (newFilePath) {
+        try {
+          await fs.unlink(newFilePath);
+        } catch {
+          // Ignore cleanup failure for partially-written files.
+        }
+      }
       throw error;
     } finally {
       client.release();

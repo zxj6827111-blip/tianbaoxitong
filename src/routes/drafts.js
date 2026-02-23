@@ -23,6 +23,7 @@ const {
 const { sanitizeManualInputRow, sanitizeManualTextByKey } = require('../services/manualTextSanitizer');
 const { createSuggestion, listDraftSuggestions } = require('../repositories/suggestionRepository');
 const { getUploadFilePath } = require('../services/uploadStorage');
+const { reportDir } = require('../services/reportStorage');
 const { extractHistoryFactsFromTableData } = require('../services/historyFactAutoExtractor');
 const { recalculateSheetFormulaCells } = require('../services/excelFormulaEvaluator');
 
@@ -144,6 +145,13 @@ const budgetTableCache = new Map();
 const normalizeSheetName = (name) => String(name || '').replace(/\s+/g, '');
 const normalizeDiagText = (value) => normalizeSheetName(value).replace(/[“”"']/g, '');
 
+const isPathInside = (targetPath, parentDir) => {
+  const normalizedTarget = path.resolve(targetPath);
+  const normalizedParent = path.resolve(parentDir);
+  const rel = path.relative(normalizedParent, normalizedTarget);
+  return rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+};
+
 const sendFileOr404 = async (res, filePath, contentType, filename) => {
   if (!filePath) {
     throw new AppError({
@@ -154,11 +162,18 @@ const sendFileOr404 = async (res, filePath, contentType, filename) => {
   }
 
   const resolved = path.resolve(filePath);
-  let fileBuffer;
+  if (!isPathInside(resolved, reportDir)) {
+    throw new AppError({
+      statusCode: 404,
+      code: 'FILE_NOT_FOUND',
+      message: 'File not found'
+    });
+  }
+
   try {
-    fileBuffer = await fs.readFile(resolved);
+    await fs.access(resolved);
   } catch (error) {
-    if (error && error.code === 'ENOENT') {
+    if (error.code === 'ENOENT') {
       throw new AppError({
         statusCode: 404,
         code: 'FILE_NOT_FOUND',
@@ -170,7 +185,25 @@ const sendFileOr404 = async (res, filePath, contentType, filename) => {
 
   res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  return res.send(fileBuffer);
+  await new Promise((resolve, reject) => {
+    res.sendFile(resolved, (error) => {
+      if (!error) {
+        resolve();
+        return;
+      }
+
+      if (error.code === 'ENOENT' || error.statusCode === 404) {
+        reject(new AppError({
+          statusCode: 404,
+          code: 'FILE_NOT_FOUND',
+          message: 'File not found'
+        }));
+        return;
+      }
+
+      reject(error);
+    });
+  });
 };
 
 const previewExistsForDraft = async ({ draftId, userId }) => {

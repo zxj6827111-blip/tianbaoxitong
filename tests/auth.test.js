@@ -47,7 +47,7 @@ describe('auth', () => {
   });
 
   beforeEach(async () => {
-    resetLoginRateLimitStore();
+    await resetLoginRateLimitStore();
     await db.query('TRUNCATE user_roles, users, org_unit, org_department RESTART IDENTITY CASCADE');
   });
 

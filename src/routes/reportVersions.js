@@ -34,11 +34,10 @@ const sendFileOr404 = async (res, filePath, contentType, filename) => {
     });
   }
 
-  let fileBuffer;
   try {
-    fileBuffer = await fs.readFile(resolved);
+    await fs.access(resolved);
   } catch (error) {
-    if (error && error.code === 'ENOENT') {
+    if (error.code === 'ENOENT') {
       throw new AppError({
         statusCode: 404,
         code: 'FILE_NOT_FOUND',
@@ -50,7 +49,25 @@ const sendFileOr404 = async (res, filePath, contentType, filename) => {
 
   res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  return res.send(fileBuffer);
+  await new Promise((resolve, reject) => {
+    res.sendFile(resolved, (error) => {
+      if (!error) {
+        resolve();
+        return;
+      }
+
+      if (error.code === 'ENOENT' || error.statusCode === 404) {
+        reject(new AppError({
+          statusCode: 404,
+          code: 'FILE_NOT_FOUND',
+          message: 'Report file not found'
+        }));
+        return;
+      }
+
+      reject(error);
+    });
+  });
 };
 
 const ensureReportAccess = async (reportVersion, user) => {

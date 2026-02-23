@@ -1,20 +1,37 @@
 const express = require('express');
 const cors = require('cors');
+const crypto = require('node:crypto');
 const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
 const adminOrgRoutes = require('./routes/adminOrg');
 const adminArchivesRoutes = require('./routes/adminArchives');
 const adminSuggestionRoutes = require('./routes/adminSuggestions');
 const adminHistoryRoutes = require('./routes/adminHistory');
+const metricsRoutes = require('./routes/metrics');
 const historyRoutes = require('./routes/history');
 const uploadRoutes = require('./routes/uploads');
 const draftRoutes = require('./routes/drafts');
 const reportVersionRoutes = require('./routes/reportVersions');
 const finalRoutes = require('./routes/final');
 const { AppError, errorHandler } = require('./errors');
+const logger = require('./services/logger');
 
 const app = express();
 app.set('query parser', 'simple');
+if (process.env.TRUST_PROXY) {
+  // Example values: "1", "loopback", "true".
+  app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : process.env.TRUST_PROXY);
+}
+
+// Request trace id for end-to-end correlation across logs and API responses.
+app.use((req, res, next) => {
+  const incomingId = String(req.headers['x-request-id'] || '').trim();
+  const requestId = incomingId || crypto.randomUUID();
+  req.requestId = requestId;
+  res.setHeader('X-Request-Id', requestId);
+  next();
+});
+
 const DEFAULT_CORS_ORIGINS = ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:5174'];
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -48,19 +65,47 @@ app.use((req, res, next) => {
     return next();
   }
 
-  if (req.path === '/api/health' || req.method === 'OPTIONS') {
+  if (req.path === '/api/health' || req.path === '/metrics' || req.method === 'OPTIONS') {
     return next();
   }
 
   const start = Date.now();
+  const requestLogFormat = String(process.env.REQUEST_LOG_FORMAT || 'json').toLowerCase();
   res.on('finish', () => {
     const durationMs = Date.now() - start;
-    const line = `[HTTP] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms)`;
-    if (res.statusCode >= 400) {
-      console.warn(line);
-    } else {
-      console.log(line);
+    const userId = req.user?.id || null;
+    const requestMeta = {
+      request_id: req.requestId || null,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      duration_ms: durationMs,
+      ip: req.ip || null,
+      user_id: userId,
+      user_agent: req.headers['user-agent'] || null
+    };
+
+    if (requestLogFormat !== 'json') {
+      const line = `[HTTP] ${req.method} ${req.originalUrl} -> ${res.statusCode} (${durationMs}ms) req_id=${req.requestId}`;
+      if (res.statusCode >= 500) {
+        console.error(line);
+      } else if (res.statusCode >= 400) {
+        console.warn(line);
+      } else {
+        console.log(line);
+      }
+      return;
     }
+
+    if (res.statusCode >= 500) {
+      logger.error('http_request', requestMeta);
+      return;
+    }
+    if (res.statusCode >= 400) {
+      logger.warn('http_request', requestMeta);
+      return;
+    }
+    logger.info('http_request', requestMeta);
   });
   next();
 });
@@ -69,6 +114,7 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.use('/metrics', metricsRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/admin/org', adminOrgRoutes);
