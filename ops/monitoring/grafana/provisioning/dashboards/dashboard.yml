@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: Tianbao Monitoring
+    orgId: 1
+    folder: Tianbao
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

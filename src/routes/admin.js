@@ -7,6 +7,7 @@ const {
   getUnitDetail,
   getUnitBadges
 } = require('../repositories/orgRepository');
+const { getReportGenerationMetrics } = require('../services/reportService');
 
 const router = express.Router();
 
@@ -144,6 +145,15 @@ router.get('/units/:unitId/badges', requireAuth, requireRole(['admin', 'maintain
     }
 
     return res.json({ badges });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/system/report-generation-metrics', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  try {
+    const metrics = await getReportGenerationMetrics();
+    return res.json({ metrics });
   } catch (error) {
     return next(error);
   }

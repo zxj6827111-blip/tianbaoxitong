@@ -191,6 +191,41 @@ describe('admin management endpoints', () => {
     expect(filterResponse.body.units.length).toBe(2);
   });
 
+  it('returns report generation metrics for admin users', async () => {
+    await seedAdminUser();
+
+    const token = await login();
+    const response = await request(app)
+      .get('/api/admin/system/report-generation-metrics')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.metrics).toEqual(expect.objectContaining({
+      config: expect.objectContaining({
+        concurrency_limit: expect.any(Number),
+        queue_timeout_ms: expect.any(Number),
+        queue_poll_ms: expect.any(Number)
+      }),
+      queue: expect.objectContaining({
+        waiting_now_local: expect.any(Number),
+        waiting_peak_local: expect.any(Number),
+        running_now_local: expect.any(Number),
+        running_peak_local: expect.any(Number)
+      }),
+      totals: expect.objectContaining({
+        jobs: expect.any(Number),
+        success: expect.any(Number),
+        failed: expect.any(Number),
+        timeout: expect.any(Number),
+        failure_rate: expect.any(Number),
+        avg_wait_ms: expect.any(Number),
+        avg_duration_ms: expect.any(Number)
+      }),
+      by_operation: expect.any(Object)
+    }));
+    expect(response.body.metrics.queue).toHaveProperty('running_now_global');
+  });
+
   it('rejects invalid reorder type on admin org endpoint', async () => {
     await seedAdminUser();
 

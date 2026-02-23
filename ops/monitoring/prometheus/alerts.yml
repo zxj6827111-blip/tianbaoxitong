@@ -1,0 +1,39 @@
+groups:
+  - name: report_generation_alerts
+    interval: 30s
+    rules:
+      - alert: ReportGenerationQueueBacklogHigh
+        expr: app_report_generation_queue_waiting_now_local >= 3
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Report queue backlog is high"
+          description: "Queue waiting jobs stayed >=3 for over 3 minutes. Consider tuning REPORT_GENERATION_CONCURRENCY or scaling instances."
+
+      - alert: ReportGenerationFailureRateHigh
+        expr: app_report_generation_failure_rate >= 0.15
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Report generation failure rate is high"
+          description: "Failure rate stayed >=15% for over 5 minutes. Check LibreOffice/CPU/memory/IO and recent releases."
+
+      - alert: ReportGenerationLongQueueWait
+        expr: app_report_generation_avg_wait_ms >= 30000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Average report queue wait time is too long"
+          description: "Average queue wait exceeded 30s for over 5 minutes."
+
+      - alert: ReportMetricsMissing
+        expr: absent(app_report_generation_jobs_total)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Report metrics are missing"
+          description: "Prometheus cannot scrape app report metrics for at least 5 minutes."
