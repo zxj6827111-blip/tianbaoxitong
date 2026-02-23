@@ -263,26 +263,26 @@ const adjustRowHeight = (row, text, options = {}) => {
     charsPerLine = 40,
     minHeight = 20,
     maxHeight = 42,
-    respectExistingHeight = true
+    respectExistingHeight = true,
+    lineHeight = 18.4
   } = options;
   const lines = String(text).split(/\r?\n/);
   const safeCharsPerLine = Math.max(12, charsPerLine);
   const estimateUnits = (line) => Array.from(line || '').reduce((total, ch) => {
     if (/\s/.test(ch)) return total + 0.5;
     const code = ch.codePointAt(0) || 0;
-    return total + (code > 0x7f ? 1.6 : 1);
+    return total + (code > 0x7f ? 1.8 : 1);
   }, 0);
   let visualLines = 0;
   for (const line of lines) {
     const units = estimateUnits(line);
     visualLines += Math.max(1, Math.ceil(units / safeCharsPerLine));
   }
-  const baseHeight = 15.6;
   const currentHeight = Number(row.height);
   const lowerBound = respectExistingHeight && Number.isFinite(currentHeight) && currentHeight > 0
     ? Math.max(minHeight, currentHeight)
     : minHeight;
-  const targetHeight = Math.min(maxHeight, Math.max(lowerBound, visualLines * baseHeight * 1.18));
+  const targetHeight = Math.min(maxHeight, Math.max(lowerBound, visualLines * lineHeight));
   row.height = targetHeight;
 };
 
@@ -1616,19 +1616,96 @@ const fillExcelTemplate = async ({ templatePath, sourcePath, outputPath, values,
   };
 
   const setExplanationBlocks = (sheetName, introText, lineItems = []) => {
+    const sheet = workbook.getWorksheet(sheetName);
+    if (!sheet) return;
+
     const intro = String(introText || '').trim();
     const detail = Array.isArray(lineItems)
       ? lineItems.map((item) => String(item || '').trim()).filter(Boolean)
       : [];
-    const mergedText = [intro, ...detail].filter(Boolean).join('\n');
-    if (!mergedText) return;
-    setTextBlock(sheetName, 'A3', mergedText, 900, {
+
+    if (!intro && detail.length === 0) return;
+
+    const formattedIntro = formatParagraphIndent(intro, {
       splitSections: false,
       splitSubSections: true,
       indentSubSectionHeadings: false,
-      minRows: 18,
-      lineHeight: 20
+      indentTopLevelHeadings: false
     });
+
+    const startCell = sheet.getCell('A3');
+    const startRow = startCell.row;
+    const startCol = startCell.col;
+
+    const templateFont = hasFont(startCell.font)
+      ? cloneValue(startCell.font)
+      : findSheetBodyFont(sheet, startRow, startCol, 40);
+
+    const baseSpan = resolveMergedSpan(sheet, startRow, startCol);
+    const baseCols = Math.max(1, baseSpan.cols);
+    const firstWidth = getColumnSpanWidth(sheet, startCol, baseCols);
+    const charsPerLine = Math.max(12, Math.floor(firstWidth * 0.9));
+
+    const mergeRef = findMergedRangeRef(sheet, startRow, startCol);
+    if (mergeRef) {
+      try {
+        sheet.unMergeCells(mergeRef);
+      } catch (error) {
+        // Ignore
+      }
+    }
+
+    let currentRow = startRow;
+    const FIRST_LINE_INDENT = '\u3000\u3000';
+
+    const writeBlockToRow = (text, isParagraph) => {
+      const cellText = isParagraph ? text : (text.startsWith(FIRST_LINE_INDENT) ? text : `${FIRST_LINE_INDENT}${text}`);
+      if (baseCols > 1) {
+        try {
+          sheet.mergeCells(currentRow, startCol, currentRow, startCol + baseCols - 1);
+        } catch (error) {
+          // Ignore
+        }
+      }
+      const cell = sheet.getRow(currentRow).getCell(startCol);
+      cell.value = cellText;
+      cell.alignment = { wrapText: true, vertical: 'middle', horizontal: 'left' };
+      if (!hasFont(cell.font) && hasFont(templateFont)) {
+        cell.font = cloneValue(templateFont);
+      }
+      adjustRowHeight(sheet.getRow(currentRow), cellText, {
+        charsPerLine: Math.floor(charsPerLine * 0.95),
+        minHeight: 24,
+        maxHeight: 1200,
+        respectExistingHeight: false,
+        lineHeight: 18
+      });
+      currentRow += 1;
+    };
+
+    if (formattedIntro) {
+      writeBlockToRow(formattedIntro, true);
+    }
+
+    for (const item of detail) {
+      writeBlockToRow(item, false);
+    }
+
+    const clearEnd = Math.min(sheet.actualRowCount || sheet.rowCount || currentRow, currentRow + 200);
+    for (let rowNo = currentRow; rowNo <= clearEnd; rowNo += 1) {
+      if (baseCols > 1) {
+        try {
+          sheet.unMergeCells(rowNo, startCol, rowNo, startCol + baseCols - 1);
+        } catch (e) { }
+      }
+      const cell = sheet.getRow(rowNo).getCell(startCol);
+      if (cell.value !== null && cell.value !== undefined) {
+        cell.value = null;
+      }
+      sheet.getRow(rowNo).height = undefined;
+    }
+
+    normalizeNarrativeSheetLayout(sheet, { minLastRow: Math.max(startRow, currentRow - 1) });
   };
 
   const projectSheetText = String(payload.manualTexts.project_expense || '')

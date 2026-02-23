@@ -378,9 +378,9 @@ describe('excelFiller narrative layout', () => {
     const row4 = parseText(sheet.getCell('A4').value).trim();
     expect(row3.length).toBeGreaterThan(0);
     expect(row4.length).toBeGreaterThan(0);
-    expect(sheet.getCell('A3').alignment?.wrapText).not.toBe(true);
+    expect(sheet.getCell('A3').alignment?.wrapText).toBe(true);
     expect((sheet.model.merges || []).some((ref) => /^A3:A\d+$/.test(ref))).toBe(false);
-    expect(sheet.getRow(3).height).toBe(20);
+    expect(sheet.getRow(3).height).toBeGreaterThan(20);
   });
 
   it('keeps first-line indent for each explanation paragraph in line layout', () => {
