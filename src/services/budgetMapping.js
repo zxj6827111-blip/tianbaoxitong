@@ -62,20 +62,27 @@
     key: 'budget_expenditure_basic',
     sheet: '预算汇总',
     aliases: ['2.15单位收支总表'],
-    rowAnchor: '基本支出',
-    rowAnchorAliases: ['支出总计', '支出合计'],
+    rowAnchor: '支出总计',
+    rowAnchorAliases: ['支出合计', '基本支出'],
     colAnchor: '预算数（万元）',
     colAnchorAliases: ['预算数', '基本支出'],
-    sumCols: ['人员经费', '公用经费']
+    sumCols: ['人员经费', '公用经费'],
+    sumRows: ['其中：人员经费', '人员经费', '公用经费'],
+    forceSumCols: true,
+    forceSumRows: true
   },
   {
     key: 'budget_expenditure_project',
     sheet: '预算汇总',
     aliases: ['2.15单位收支总表'],
-    rowAnchor: '项目支出',
-    rowAnchorAliases: ['支出总计', '支出合计'],
+    rowAnchor: '支出总计',
+    rowAnchorAliases: ['支出合计', '项目支出'],
     colAnchor: '预算数（万元）',
-    colAnchorAliases: ['预算数', '项目支出']
+    colAnchorAliases: ['预算数', '项目支出'],
+    sumCols: ['项目支出'],
+    sumRows: ['项目支出'],
+    forceSumCols: true,
+    forceSumRows: true
   },
 
   // === 财政拨款收支总表 / 2.18单位财政拨款收支总表 ===
@@ -286,7 +293,10 @@ const BUDGET_MAPPING_DEPARTMENT = [
     aliases: ['3.20部门财政拨款支出预算明细表'],
     rowAnchor: '合计',
     rowAnchorIndex: -1,
-    colAnchor: '基本支出'
+    colAnchor: '人员经费',
+    colAnchorAliases: ['基本支出'],
+    sumCols: ['人员经费', '公用经费'],
+    forceSumCols: true
   },
   {
     key: 'budget_expenditure_project',

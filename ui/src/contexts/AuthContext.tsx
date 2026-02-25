@@ -8,6 +8,9 @@ interface User {
   roles?: string[];
   unit_id?: string | number;
   department_id?: string | number;
+  managed_unit_ids?: string[];
+  can_create_budget?: boolean;
+  can_create_final?: boolean;
 }
 
 interface AuthContextType {

@@ -1,20 +1,41 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Settings, Upload } from 'lucide-react';
+import { ArrowLeft, Settings, Upload, FileText, Users } from 'lucide-react';
 import { apiClient } from '../../utils/apiClient';
 import DepartmentTree from './DepartmentTree';
 import UnitList from './UnitList';
 import OrgImportModal from './OrgImportModal';
+import PdfBatchUpload from './PdfBatchUpload';
+import UserManagement from './UserManagement';
 import { DepartmentNode, UnitRow } from '../../data/mockAdminData';
 
-const DEFAULT_PAGE_SIZE = 10;
+const DEFAULT_PAGE_SIZE = 30;
 const CURRENT_YEAR = new Date().getFullYear();
+const PAGE_SIZE_OPTIONS = [20, 30, 50, 100];
 
 const parseSearchYear = (value: string | null) => {
   if (!value) return CURRENT_YEAR;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1900) {
     return CURRENT_YEAR;
+  }
+  return parsed;
+};
+
+const parseSearchPage = (value: string | null) => {
+  if (!value) return 1;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return 1;
+  }
+  return parsed;
+};
+
+const parseSearchPageSize = (value: string | null) => {
+  if (!value) return DEFAULT_PAGE_SIZE;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || !PAGE_SIZE_OPTIONS.includes(parsed)) {
+    return DEFAULT_PAGE_SIZE;
   }
   return parsed;
 };
@@ -26,18 +47,21 @@ const AdminConsole: React.FC = () => {
   const [departments, setDepartments] = useState<DepartmentNode[]>([]);
   const [units, setUnits] = useState<UnitRow[]>([]);
 
-  const [selectedDepartment, setSelectedDepartment] = useState<string | null>(null);
+  const [selectedDepartment, setSelectedDepartment] = useState<string | null>(searchParams.get('department_id'));
   const [filter, setFilter] = useState<string | null>(searchParams.get('filter'));
   const [budgetYear, setBudgetYear] = useState<number>(parseSearchYear(searchParams.get('year')));
 
-  const [page, setPage] = useState(1);
+  const [page, setPage] = useState(parseSearchPage(searchParams.get('page')));
+  const [pageSize, setPageSize] = useState(parseSearchPageSize(searchParams.get('page_size')));
   const [total, setTotal] = useState(0);
-  const [searchInput, setSearchInput] = useState('');
-  const [searchQuery, setSearchQuery] = useState('');
+  const [searchInput, setSearchInput] = useState(searchParams.get('q') || '');
+  const [searchQuery, setSearchQuery] = useState((searchParams.get('q') || '').trim());
 
   const [showImportModal, setShowImportModal] = useState(false);
-  const [viewMode, setViewMode] = useState<'units' | 'department'>('units');
-  const [selectedDistrict, setSelectedDistrict] = useState<string>('');
+  const [showPdfBatchModal, setShowPdfBatchModal] = useState(false);
+  const [showUserManagement, setShowUserManagement] = useState(false);
+  const [selectedDistrict, setSelectedDistrict] = useState<string>(searchParams.get('district') || '');
+  const didInitPageRef = useRef(false);
 
   useEffect(() => {
     const handler = window.setTimeout(() => setSearchQuery(searchInput.trim()), 350);
@@ -48,12 +72,17 @@ const AdminConsole: React.FC = () => {
     const params = new URLSearchParams();
     params.set('year', String(budgetYear));
     if (filter) params.set('filter', filter);
+    if (selectedDistrict) params.set('district', selectedDistrict);
+    if (selectedDepartment) params.set('department_id', selectedDepartment);
+    if (searchQuery) params.set('q', searchQuery);
+    if (page > 1) params.set('page', String(page));
+    if (pageSize !== DEFAULT_PAGE_SIZE) params.set('page_size', String(pageSize));
     setSearchParams(params, { replace: true });
-  }, [budgetYear, filter, setSearchParams]);
+  }, [budgetYear, filter, selectedDistrict, selectedDepartment, searchQuery, page, pageSize, setSearchParams]);
 
   const loadDepartments = async () => {
     try {
-      const data = await apiClient.getDepartments(budgetYear);
+      const data = await apiClient.getDepartments(budgetYear, selectedDistrict || undefined);
       setDepartments(data.departments ?? []);
     } catch (error) {
       console.error('Failed to load departments:', error);
@@ -66,9 +95,10 @@ const AdminConsole: React.FC = () => {
       const params: any = {
         year: budgetYear,
         page,
-        pageSize: DEFAULT_PAGE_SIZE
+        pageSize
       };
       if (selectedDepartment) params.department_id = selectedDepartment;
+      if (selectedDistrict) params.district = selectedDistrict;
       if (searchQuery) params.q = searchQuery;
       if (filter) params.filter = filter;
 
@@ -255,20 +285,39 @@ const AdminConsole: React.FC = () => {
 
   useEffect(() => {
     loadDepartments();
-  }, [budgetYear]);
+  }, [budgetYear, selectedDistrict]);
 
   useEffect(() => {
+    if (!didInitPageRef.current) {
+      didInitPageRef.current = true;
+      return;
+    }
     setPage(1);
-  }, [budgetYear, selectedDepartment, filter, searchQuery]);
+  }, [budgetYear, selectedDepartment, selectedDistrict, filter, searchQuery, pageSize]);
 
   useEffect(() => {
     loadUnits();
-  }, [budgetYear, selectedDepartment, searchQuery, filter, page]);
+  }, [budgetYear, selectedDepartment, selectedDistrict, searchQuery, filter, page, pageSize]);
 
   const selectedDepartmentLabel = useMemo(() => {
     const found = departments.find((dept) => dept.id === selectedDepartment);
-    return found ? `${found.name} (${found.code})` : '全部部门';
-  }, [departments, selectedDepartment]);
+    if (found) return `${found.name} (${found.code})`;
+    return selectedDistrict ? `${selectedDistrict}（全部部门）` : '全部部门';
+  }, [departments, selectedDepartment, selectedDistrict]);
+
+  const handleDistrictChange = (district: string) => {
+    setSelectedDistrict(district);
+    setSelectedDepartment(null);
+    setPage(1);
+  };
+
+  const openDepartmentDetail = () => {
+    if (!selectedDepartment) {
+      alert('请先在左侧选择一个部门');
+      return;
+    }
+    navigate(`/admin/department/${selectedDepartment}?year=${budgetYear}`);
+  };
 
   return (
     <div className="flex flex-col h-[calc(100vh-2rem)] gap-4">
@@ -288,7 +337,28 @@ const AdminConsole: React.FC = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-3 text-sm">
+          <button
+            onClick={() => setShowImportModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-brand-200 bg-brand-50 text-brand-700 hover:bg-brand-100 transition-colors text-xs font-medium"
+          >
+            <Upload className="w-3.5 h-3.5" />
+            批量导入
+          </button>
+          <button
+            onClick={() => setShowPdfBatchModal(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 transition-colors text-xs font-medium"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            PDF批量上传
+          </button>
+          <button
+            onClick={() => setShowUserManagement(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 transition-colors text-xs font-medium"
+          >
+            <Users className="w-3.5 h-3.5" />
+            用户管理
+          </button>
           <label className="flex items-center gap-2 px-3 py-1 bg-brand-50 text-brand-700 rounded-full font-medium border border-brand-100">
             <span>当前预算年度</span>
             <select
@@ -304,18 +374,14 @@ const AdminConsole: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_minmax(520px,1fr)] gap-4 flex-1 min-h-0 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-[340px_minmax(520px,1fr)] xl:grid-cols-[380px_minmax(640px,1fr)] gap-4 flex-1 min-h-0 items-start">
         <section className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden animate-fade-in" style={{ animationDelay: '0ms' }}>
           <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
             <h2 className="font-bold text-slate-800 flex items-center gap-2">
               <div className="w-1 h-4 bg-brand-600 rounded-full"></div>
               部门架构
             </h2>
-            <button
-              onClick={() => setShowImportModal(true)}
-              className="p-2 hover:bg-brand-50 text-brand-600 rounded-lg transition-colors"
-              title="批量导入"
-            >
+            <button onClick={() => setShowImportModal(true)} className="p-2 hover:bg-brand-50 text-brand-600 rounded-lg transition-colors" title="批量导入">
               <Upload className="w-4 h-4" />
             </button>
           </div>
@@ -323,33 +389,69 @@ const AdminConsole: React.FC = () => {
             <DepartmentTree
               departments={departments}
               selectedId={selectedDepartment}
-              onSelect={(id) => setSelectedDepartment(id)}
+              onSelect={(id) => {
+                if (id && id === selectedDepartment) {
+                  navigate(`/admin/department/${id}?year=${budgetYear}`);
+                  return;
+                }
+                setSelectedDepartment(id);
+              }}
               onEdit={handleEdit}
               onDelete={handleDelete}
               onAdd={handleAdd}
               onReorder={handleReorder}
               selectedDistrict={selectedDistrict}
-              onDistrictChange={setSelectedDistrict}
+              onDistrictChange={handleDistrictChange}
             />
           </div>
         </section>
 
         <section className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden animate-fade-in" style={{ animationDelay: '100ms' }}>
           <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
-            <h2 className="font-bold text-slate-800 flex items-center gap-2">
-              <div className="w-1 h-4 bg-brand-600 rounded-full"></div>
-              单位列表
-              <span className="text-sm font-normal text-slate-500 ml-2 bg-slate-100 px-2 py-0.5 rounded-full">
-                {selectedDepartmentLabel}
-              </span>
-            </h2>
-            <div className="text-xs text-slate-400">共 {total} 条记录，点击单位进入详情页</div>
+            <div className="flex items-center gap-2">
+              <h2 className="font-bold text-slate-800 flex items-center gap-2">
+                <div className="w-1 h-4 bg-brand-600 rounded-full"></div>
+                单位列表
+              </h2>
+              {selectedDepartment ? (
+                <button
+                  type="button"
+                  onClick={openDepartmentDetail}
+                  className="text-sm font-normal text-brand-700 ml-2 bg-brand-50 border border-brand-200 px-2 py-0.5 rounded-full hover:bg-brand-100 transition-colors"
+                  title="进入部门详情页"
+                >
+                  {selectedDepartmentLabel}
+                </button>
+              ) : (
+                <span className="text-sm font-normal text-slate-500 ml-2 bg-slate-100 px-2 py-0.5 rounded-full">
+                  {selectedDepartmentLabel}
+                </span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="inline-flex items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+                <button
+                  type="button"
+                  className="px-3 py-1 text-xs rounded-md transition-colors bg-white text-brand-700 shadow-sm"
+                >
+                  下属单位
+                </button>
+                <button
+                  type="button"
+                  onClick={openDepartmentDetail}
+                  className="px-3 py-1 text-xs rounded-md transition-colors text-slate-600 hover:text-slate-700"
+                >
+                  部门年报
+                </button>
+              </div>
+              <div className="text-xs text-slate-400">共 {total} 条记录，点击单位进入详情页</div>
+            </div>
           </div>
           <div className="flex-1 overflow-hidden flex flex-col">
             <UnitList
               units={units}
               page={page}
-              pageSize={DEFAULT_PAGE_SIZE}
+              pageSize={pageSize}
               total={total}
               selectedUnitId={null}
               filter={filter}
@@ -357,11 +459,10 @@ const AdminConsole: React.FC = () => {
               onSearchChange={setSearchInput}
               onFilterChange={(nextFilter) => setFilter(nextFilter)}
               onPageChange={(nextPage) => setPage(nextPage)}
+              onPageSizeChange={(nextPageSize) => setPageSize(nextPageSize)}
               onSelect={(id) => navigate(`/admin/unit/${id}?year=${budgetYear}`)}
               onDelete={handleDeleteUnit}
               onEdit={handleEditUnit}
-              viewMode={viewMode}
-              onViewModeChange={setViewMode}
               onAddUnit={handleAddUnit}
             />
           </div>
@@ -375,6 +476,20 @@ const AdminConsole: React.FC = () => {
               loadDepartments();
               loadUnits();
             }}
+          />
+        )}
+
+        {showPdfBatchModal && (
+          <PdfBatchUpload
+            isOpen={showPdfBatchModal}
+            onClose={() => setShowPdfBatchModal(false)}
+          />
+        )}
+
+        {showUserManagement && (
+          <UserManagement
+            isOpen={showUserManagement}
+            onClose={() => setShowUserManagement(false)}
           />
         )}
       </div>

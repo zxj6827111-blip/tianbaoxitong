@@ -272,7 +272,7 @@ const isLikelyTablessTableLine = (line) => {
   const text = String(line || '').trim();
   if (!text) return false;
   if (/^(?:--\s*\d+\s*of\s*\d+\s*--|page\s*\d+)/i.test(text)) return false;
-  if (/^[-鈥擼]{2,}$/.test(text)) return false;
+  if (/^[-—]{2,}$/.test(text)) return false;
 
   const tokens = parseSpaceSeparatedRow(text);
   if (!tokens) return false;
@@ -988,14 +988,65 @@ const toFactNumber = (value) => {
   return Number(parsed.toFixed(2));
 };
 
-const resolveTargetUnitId = async ({ client, report, inputUnitId }) => {
+const ARCHIVE_SCOPE = {
+  UNIT: 'unit',
+  DEPARTMENT: 'department'
+};
+
+const parseArchiveScope = (value) => (
+  String(value || '').toLowerCase() === ARCHIVE_SCOPE.DEPARTMENT
+    ? ARCHIVE_SCOPE.DEPARTMENT
+    : ARCHIVE_SCOPE.UNIT
+);
+
+const resolveDepartmentDisplayFallbackUnitId = async ({ client, departmentId, year = null, reportType = null }) => {
+  const params = [departmentId];
+  let index = 2;
+  let yearCondition = '';
+  let reportTypeCondition = '';
+
+  if (Number.isInteger(year)) {
+    params.push(year);
+    yearCondition = `AND ar.year = $${index}`;
+    index += 1;
+  }
+  if (reportType) {
+    params.push(reportType);
+    reportTypeCondition = `AND ar.report_type = $${index}`;
+  }
+
+  const fallbackResult = await client.query(
+    `SELECT ar.unit_id,
+            u.name,
+            COALESCE(u.sort_order, 2147483647) AS sort_order,
+            MAX(ar.updated_at) AS latest_updated_at
+     FROM org_dept_annual_report ar
+     LEFT JOIN org_unit u ON u.id = ar.unit_id
+     WHERE ar.department_id = $1
+       AND ar.unit_id IS NOT NULL
+       ${yearCondition}
+       ${reportTypeCondition}
+     GROUP BY ar.unit_id, u.name, u.sort_order
+     ORDER BY
+       CASE WHEN COALESCE(u.name, '') LIKE '%本级%' THEN 0 ELSE 1 END,
+       COALESCE(u.sort_order, 2147483647) ASC,
+       MAX(ar.updated_at) DESC
+     LIMIT 1`,
+    params
+  );
+
+  if (fallbackResult.rowCount === 0) return null;
+  return fallbackResult.rows[0].unit_id ? String(fallbackResult.rows[0].unit_id) : null;
+};
+
+const resolveArchiveUnitIdForDepartment = async ({ client, departmentId, inputUnitId }) => {
   if (inputUnitId) {
     const unitCheck = await client.query(
       `SELECT id
        FROM org_unit
        WHERE id = $1
          AND department_id = $2`,
-      [inputUnitId, report.department_id]
+      [inputUnitId, departmentId]
     );
     if (unitCheck.rowCount === 0) {
       throw new AppError({
@@ -1007,22 +1058,48 @@ const resolveTargetUnitId = async ({ client, report, inputUnitId }) => {
     return inputUnitId;
   }
 
-  const fallbackUnit = await client.query(
+  const fallbackUnits = await client.query(
     `SELECT id
      FROM org_unit
      WHERE department_id = $1
      ORDER BY sort_order ASC, created_at ASC
-     LIMIT 1`,
-    [report.department_id]
+     LIMIT 2`,
+    [departmentId]
   );
-  if (fallbackUnit.rowCount === 0) {
+  if (fallbackUnits.rowCount === 0) {
     throw new AppError({
       statusCode: 400,
       code: 'VALIDATION_ERROR',
       message: 'No unit found for report department'
     });
   }
-  return fallbackUnit.rows[0].id;
+  if (fallbackUnits.rowCount === 1) {
+    return fallbackUnits.rows[0].id;
+  }
+  throw new AppError({
+    statusCode: 400,
+    code: 'VALIDATION_ERROR',
+    message: 'unit_id is required when department has multiple units'
+  });
+};
+
+const resolveTargetUnitId = async ({ client, report, inputUnitId }) => {
+  const reportUnitId = report?.unit_id ? String(report.unit_id) : null;
+  if (inputUnitId && reportUnitId && String(inputUnitId) !== reportUnitId) {
+    throw new AppError({
+      statusCode: 400,
+      code: 'VALIDATION_ERROR',
+      message: 'unit_id does not match report unit'
+    });
+  }
+  if (!inputUnitId && reportUnitId) {
+    return reportUnitId;
+  }
+  return resolveArchiveUnitIdForDepartment({
+    client,
+    departmentId: report.department_id,
+    inputUnitId: inputUnitId || null
+  });
 };
 
 const loadApprovedAliasMappings = async (client) => {
@@ -1879,6 +1956,8 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
     }
 
     const { department_id, year } = req.body;
+    const inputUnitId = req.body?.unit_id ? String(req.body.unit_id).trim() : null;
+    const scope = parseArchiveScope(req.body?.scope);
     const reportTypeRaw = req.body.report_type;
     const report_type = String(reportTypeRaw || '').toUpperCase();
 
@@ -1902,11 +1981,29 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
       });
     }
 
+    const parsedYear = parseInt(year, 10);
+    if (!Number.isInteger(parsedYear) || parsedYear < 1900 || parsedYear > 2100) {
+      await fs.unlink(req.file.path);
+      throw new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: 'year must be a valid integer'
+      });
+    }
+
     // Calculate file hash
     const fileBuffer = await fs.readFile(req.file.path);
     const fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
 
     await client.query('BEGIN');
+
+    const resolvedUnitId = scope === ARCHIVE_SCOPE.DEPARTMENT
+      ? null
+      : await resolveArchiveUnitIdForDepartment({
+        client,
+        departmentId: department_id,
+        inputUnitId
+      });
 
     // Fix filename encoding (often issues with multer handling non-ASCII on Windows)
     let originalName = req.file.originalname;
@@ -1916,33 +2013,83 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
       console.warn('Filename decoding failed, using original:', e);
     }
 
+    if (scope === ARCHIVE_SCOPE.DEPARTMENT) {
+      const existingReportResult = await client.query(
+        `SELECT id
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND report_type = $3
+           AND unit_id IS NULL`,
+        [department_id, parsedYear, report_type]
+      );
+      const existingReportIds = existingReportResult.rows.map((row) => row.id).filter(Boolean);
+      if (existingReportIds.length > 0) {
+        await client.query('DELETE FROM org_dept_text_content WHERE source_report_id = ANY($1::uuid[])', [existingReportIds]);
+        await client.query('DELETE FROM org_dept_table_data WHERE report_id = ANY($1::uuid[])', [existingReportIds]);
+        await client.query('DELETE FROM org_dept_line_items WHERE report_id = ANY($1::uuid[])', [existingReportIds]);
+        await client.query('DELETE FROM org_dept_annual_report WHERE id = ANY($1::uuid[])', [existingReportIds]);
+      }
+    }
+
     // Insert report metadata
-    const reportResult = await client.query(
-      `INSERT INTO org_dept_annual_report 
-       (department_id, year, report_type, file_name, file_path, file_hash, file_size, uploaded_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       ON CONFLICT (department_id, year, report_type)
-       DO UPDATE SET 
-         file_name = EXCLUDED.file_name,
-         file_path = EXCLUDED.file_path,
-         file_hash = EXCLUDED.file_hash,
-         file_size = EXCLUDED.file_size,
-         uploaded_by = EXCLUDED.uploaded_by,
-         updated_at = NOW()
-       RETURNING *`,
-      [
-        department_id,
-        parseInt(year),
-        report_type,
-        originalName,
-        req.file.path,
-        fileHash,
-        req.file.size,
-        req.user.id
-      ]
-    );
+    const reportResult = scope === ARCHIVE_SCOPE.DEPARTMENT
+      ? await client.query(
+        `INSERT INTO org_dept_annual_report 
+         (department_id, unit_id, year, report_type, file_name, file_path, file_hash, file_size, uploaded_by)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6, $7, $8)
+         RETURNING *`,
+        [
+          department_id,
+          parsedYear,
+          report_type,
+          originalName,
+          req.file.path,
+          fileHash,
+          req.file.size,
+          req.user.id
+        ]
+      )
+      : await client.query(
+        `INSERT INTO org_dept_annual_report 
+         (department_id, unit_id, year, report_type, file_name, file_path, file_hash, file_size, uploaded_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (department_id, unit_id, year, report_type)
+         DO UPDATE SET 
+           file_name = EXCLUDED.file_name,
+           file_path = EXCLUDED.file_path,
+           file_hash = EXCLUDED.file_hash,
+           file_size = EXCLUDED.file_size,
+           uploaded_by = EXCLUDED.uploaded_by,
+           updated_at = NOW()
+         RETURNING *`,
+        [
+          department_id,
+          resolvedUnitId,
+          parsedYear,
+          report_type,
+          originalName,
+          req.file.path,
+          fileHash,
+          req.file.size,
+          req.user.id
+        ]
+      );
 
     const report = reportResult.rows[0];
+
+    // Always clear previously parsed artifacts for the same scope before ingesting.
+    // This avoids stale content being shown when current PDF text extraction is empty/partial.
+    await client.query(
+      `DELETE FROM org_dept_text_content
+       WHERE department_id = $1
+         AND unit_id IS NOT DISTINCT FROM $2
+         AND year = $3
+         AND report_type = $4`,
+      [department_id, resolvedUnitId, parsedYear, report_type]
+    );
+    await client.query('DELETE FROM org_dept_table_data WHERE report_id = $1', [report.id]);
+    await client.query('DELETE FROM org_dept_line_items WHERE report_id = $1', [report.id]);
 
     // Extract text from PDF
     let extractedText = '';
@@ -1982,14 +2129,14 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
         if (!finalContent) return;
         await client.query(
           `INSERT INTO org_dept_text_content 
-           (department_id, year, report_type, category, content_text, source_report_id, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           ON CONFLICT (department_id, year, report_type, category)
+           (department_id, unit_id, year, report_type, category, content_text, source_report_id, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (department_id, unit_id, year, report_type, category)
            DO UPDATE SET 
-             content_text = EXCLUDED.content_text,
-             source_report_id = EXCLUDED.source_report_id,
-             updated_at = NOW()`,
-          [department_id, parseInt(year), report_type, category, finalContent, report.id, req.user.id]
+               content_text = EXCLUDED.content_text,
+               source_report_id = EXCLUDED.source_report_id,
+               updated_at = NOW()`,
+          [department_id, resolvedUnitId, parsedYear, report_type, category, finalContent, report.id, req.user.id]
         );
       };
 
@@ -2014,10 +2161,6 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
         await upsertTextContent(subCategory, subContent);
       }
 
-      if (tables.length > 0) {
-        await client.query('DELETE FROM org_dept_table_data WHERE report_id = $1', [report.id]);
-      }
-
       for (const table of tables) {
         await client.query(
           `INSERT INTO org_dept_table_data
@@ -2034,7 +2177,7 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
           [
             report.id,
             department_id,
-            parseInt(year),
+            parsedYear,
             report_type,
             table.table_key,
             table.table_title,
@@ -2045,10 +2188,6 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
             req.user.id
           ]
         );
-      }
-
-      if (lineItems.length > 0) {
-        await client.query('DELETE FROM org_dept_line_items WHERE report_id = $1', [report.id]);
       }
 
       for (const item of lineItems) {
@@ -2067,7 +2206,7 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
           [
             report.id,
             department_id,
-            parseInt(year),
+            parsedYear,
             report_type,
             item.table_key,
             item.row_index,
@@ -2111,13 +2250,44 @@ router.post('/upload', requireAuth, requireRole(['admin', 'maintainer']), upload
 router.get('/departments/:deptId/years', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const { deptId } = req.params;
-    const yearsResult = await db.query(
-      `SELECT DISTINCT year
-       FROM org_dept_annual_report
-       WHERE department_id = $1
-       ORDER BY year DESC`,
-      [deptId]
-    );
+    const unitId = req.query.unit_id ? String(req.query.unit_id) : null;
+    const scope = parseArchiveScope(req.query.scope);
+    let yearsResult;
+    if (scope === ARCHIVE_SCOPE.DEPARTMENT) {
+      yearsResult = await db.query(
+        `SELECT DISTINCT year
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND unit_id IS NULL
+         ORDER BY year DESC`,
+        [deptId]
+      );
+      if (yearsResult.rowCount === 0) {
+        const fallbackUnitId = await resolveDepartmentDisplayFallbackUnitId({
+          client: db,
+          departmentId: deptId
+        });
+        if (fallbackUnitId) {
+          yearsResult = await db.query(
+            `SELECT DISTINCT year
+             FROM org_dept_annual_report
+             WHERE department_id = $1
+               AND unit_id = $2
+             ORDER BY year DESC`,
+            [deptId, fallbackUnitId]
+          );
+        }
+      }
+    } else {
+      yearsResult = await db.query(
+        `SELECT DISTINCT year
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND ($2::uuid IS NULL OR unit_id = $2)
+         ORDER BY year DESC`,
+        [deptId, unitId]
+      );
+    }
 
     return res.json({
       years: yearsResult.rows.map((row) => Number(row.year)).filter((value) => Number.isInteger(value))
@@ -2186,6 +2356,8 @@ router.delete('/departments/:deptId/years/:year', requireAuth, requireRole(['adm
   try {
     const { deptId, year } = req.params;
     const unitId = req.query.unit_id ? String(req.query.unit_id) : null;
+    const scope = parseArchiveScope(req.query.scope);
+    const isDepartmentScope = scope === ARCHIVE_SCOPE.DEPARTMENT;
     const parsedYear = Number(year);
     if (!Number.isInteger(parsedYear) || parsedYear < 1900 || parsedYear > 2100) {
       throw new AppError({
@@ -2195,42 +2367,95 @@ router.delete('/departments/:deptId/years/:year', requireAuth, requireRole(['adm
       });
     }
 
+    if (!isDepartmentScope && unitId) {
+      const unitCheck = await client.query(
+        `SELECT id
+         FROM org_unit
+         WHERE id = $1
+           AND department_id = $2`,
+        [unitId, deptId]
+      );
+      if (unitCheck.rowCount === 0) {
+        throw new AppError({
+          statusCode: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'unit_id does not belong to report department'
+        });
+      }
+    }
+
     await client.query('BEGIN');
 
-    const reportRows = await client.query(
-      `SELECT id, file_path
-       FROM org_dept_annual_report
-       WHERE department_id = $1 AND year = $2`,
-      [deptId, parsedYear]
-    );
+    const reportRows = isDepartmentScope
+      ? await client.query(
+        `SELECT id, file_path
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND unit_id IS NULL`,
+        [deptId, parsedYear]
+      )
+      : await client.query(
+        `SELECT id, file_path
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND ($3::uuid IS NULL OR unit_id = $3)`,
+        [deptId, parsedYear, unitId]
+      );
+    const reportIds = reportRows.rows.map((row) => row.id).filter(Boolean);
     const filePaths = reportRows.rows.map((row) => row.file_path).filter(Boolean);
 
-    const textDeleteResult = await client.query(
-      `DELETE FROM org_dept_text_content
-       WHERE department_id = $1 AND year = $2`,
-      [deptId, parsedYear]
-    );
+    const textDeleteResult = isDepartmentScope
+      ? await client.query(
+        `DELETE FROM org_dept_text_content
+         WHERE department_id = $1
+           AND year = $2
+           AND unit_id IS NULL`,
+        [deptId, parsedYear]
+      )
+      : await client.query(
+        `DELETE FROM org_dept_text_content
+         WHERE department_id = $1
+           AND year = $2
+           AND ($3::uuid IS NULL OR unit_id = $3)`,
+        [deptId, parsedYear, unitId]
+      );
 
-    const tableDeleteResult = await client.query(
-      `DELETE FROM org_dept_table_data
-       WHERE department_id = $1 AND year = $2`,
-      [deptId, parsedYear]
-    );
+    let tableDeleteResult = { rowCount: 0 };
+    let lineDeleteResult = { rowCount: 0 };
+    if (reportIds.length > 0) {
+      tableDeleteResult = await client.query(
+        `DELETE FROM org_dept_table_data
+         WHERE report_id = ANY($1::uuid[])`,
+        [reportIds]
+      );
 
-    const lineDeleteResult = await client.query(
-      `DELETE FROM org_dept_line_items
-       WHERE department_id = $1 AND year = $2`,
-      [deptId, parsedYear]
-    );
+      lineDeleteResult = await client.query(
+        `DELETE FROM org_dept_line_items
+         WHERE report_id = ANY($1::uuid[])`,
+        [reportIds]
+      );
+    }
 
-    const reportDeleteResult = await client.query(
-      `DELETE FROM org_dept_annual_report
-       WHERE department_id = $1 AND year = $2`,
-      [deptId, parsedYear]
-    );
+    const reportDeleteResult = isDepartmentScope
+      ? await client.query(
+        `DELETE FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND unit_id IS NULL`,
+        [deptId, parsedYear]
+      )
+      : await client.query(
+        `DELETE FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND ($3::uuid IS NULL OR unit_id = $3)`,
+        [deptId, parsedYear, unitId]
+      );
 
     let historyDeleteCount = 0;
-    if (unitId) {
+    if (!isDepartmentScope && unitId) {
       const historyDeleteResult = await client.query(
         `DELETE FROM history_actuals
          WHERE unit_id = $1
@@ -2277,50 +2502,125 @@ router.get('/departments/:deptId/years/:year', requireAuth, requireRole(['admin'
     const { deptId, year } = req.params;
     const reportType = req.query.report_type ? String(req.query.report_type).toUpperCase() : null;
     const reportTypeFilter = reportType && ['BUDGET', 'FINAL'].includes(reportType) ? reportType : null;
+    const unitId = req.query.unit_id ? String(req.query.unit_id) : null;
+    const scope = parseArchiveScope(req.query.scope);
+    const isDepartmentScope = scope === ARCHIVE_SCOPE.DEPARTMENT;
 
+    const parsedYear = parseInt(year, 10);
+    let resolvedDepartmentUnitId = null;
     // Get reports
-    const reportsResult = await db.query(
-      `SELECT * FROM org_dept_annual_report
-       WHERE department_id = $1 AND year = $2
-       ORDER BY report_type`,
-      [deptId, parseInt(year)]
-    );
+    let reportsResult;
+    if (isDepartmentScope) {
+      reportsResult = await db.query(
+        `SELECT *
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND ($3::text IS NULL OR report_type = $3)
+           AND unit_id IS NULL
+         ORDER BY report_type`,
+        [deptId, parsedYear, reportTypeFilter]
+      );
+      if (reportsResult.rowCount === 0) {
+        resolvedDepartmentUnitId = await resolveDepartmentDisplayFallbackUnitId({
+          client: db,
+          departmentId: deptId,
+          year: parsedYear,
+          reportType: reportTypeFilter
+        });
+        if (resolvedDepartmentUnitId) {
+          reportsResult = await db.query(
+            `SELECT *
+             FROM org_dept_annual_report
+             WHERE department_id = $1
+               AND year = $2
+               AND ($3::text IS NULL OR report_type = $3)
+               AND unit_id = $4
+             ORDER BY report_type`,
+            [deptId, parsedYear, reportTypeFilter, resolvedDepartmentUnitId]
+          );
+        }
+      }
+    } else {
+      reportsResult = await db.query(
+        `SELECT *
+         FROM org_dept_annual_report
+         WHERE department_id = $1
+           AND year = $2
+           AND ($3::text IS NULL OR report_type = $3)
+           AND ($4::uuid IS NULL OR unit_id = $4)
+         ORDER BY report_type`,
+        [deptId, parsedYear, reportTypeFilter, unitId]
+      );
+    }
+    const reportIds = reportsResult.rows.map((row) => row.id).filter(Boolean);
 
-    // Get text content
-    const textResult = await db.query(
-      `SELECT * FROM org_dept_text_content
-       WHERE department_id = $1 AND year = $2
-         AND ($3::text IS NULL OR report_type = $3)
-       ORDER BY category`,
-      [deptId, parseInt(year), reportTypeFilter]
-    );
+    const textResult = isDepartmentScope
+      ? (
+        resolvedDepartmentUnitId
+          ? await db.query(
+            `SELECT *
+             FROM org_dept_text_content
+             WHERE department_id = $1
+               AND year = $2
+               AND ($3::text IS NULL OR report_type = $3)
+               AND unit_id = $4
+             ORDER BY category`,
+            [deptId, parsedYear, reportTypeFilter, resolvedDepartmentUnitId]
+          )
+          : await db.query(
+            `SELECT *
+             FROM org_dept_text_content
+             WHERE department_id = $1
+               AND year = $2
+               AND ($3::text IS NULL OR report_type = $3)
+               AND unit_id IS NULL
+             ORDER BY category`,
+            [deptId, parsedYear, reportTypeFilter]
+          )
+      )
+      : await db.query(
+        `SELECT *
+         FROM org_dept_text_content
+         WHERE department_id = $1
+           AND year = $2
+           AND ($3::text IS NULL OR report_type = $3)
+           AND ($4::uuid IS NULL OR unit_id = $4)
+         ORDER BY category`,
+        [deptId, parsedYear, reportTypeFilter, unitId]
+      );
+    let textRows = textResult.rows;
+    let tableRows = [];
+    let lineItemRows = [];
+    if (reportIds.length > 0) {
+      const tableResult = await db.query(
+        `SELECT *
+         FROM org_dept_table_data
+         WHERE report_id = ANY($1::uuid[])
+         ORDER BY table_key`,
+        [reportIds]
+      );
+      tableRows = tableResult.rows;
 
-    const tableResult = await db.query(
-      `SELECT *
-       FROM org_dept_table_data
-       WHERE department_id = $1 AND year = $2
-         AND ($3::text IS NULL OR report_type = $3)
-       ORDER BY table_key`,
-      [deptId, parseInt(year), reportTypeFilter]
-    );
-
-    const lineItemResult = await db.query(
-      `SELECT *
-       FROM org_dept_line_items
-       WHERE department_id = $1 AND year = $2
-         AND ($3::text IS NULL OR report_type = $3)
-       ORDER BY table_key, row_index`,
-      [deptId, parseInt(year), reportTypeFilter]
-    );
+      const lineItemResult = await db.query(
+        `SELECT *
+         FROM org_dept_line_items
+         WHERE report_id = ANY($1::uuid[])
+         ORDER BY table_key, row_index`,
+        [reportIds]
+      );
+      lineItemRows = lineItemResult.rows;
+    }
 
     return res.json({
       reports: reportsResult.rows,
-      text_content: textResult.rows.map((row) => ({
+      text_content: textRows.map((row) => ({
         ...row,
         content_text: sanitizeArchiveTextByCategory(row.category, row.content_text)
       })),
-      table_data: tableResult.rows,
-      line_items: lineItemResult.rows
+      table_data: tableRows,
+      line_items: lineItemRows,
+      scope_fallback_unit_id: resolvedDepartmentUnitId
     });
   } catch (error) {
     return next(error);
@@ -2329,8 +2629,11 @@ router.get('/departments/:deptId/years/:year', requireAuth, requireRole(['admin'
 
 // Save/Update Text Content
 router.post('/text-content', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  const client = await db.getClient();
   try {
     const { department_id, year, category, content_text } = req.body;
+    const inputUnitId = req.body?.unit_id ? String(req.body.unit_id).trim() : null;
+    const scope = parseArchiveScope(req.body?.scope);
     const report_type = String(req.body?.report_type || 'BUDGET').toUpperCase();
     const normalizedContent = sanitizeReusableText(content_text, category);
 
@@ -2350,21 +2653,58 @@ router.post('/text-content', requireAuth, requireRole(['admin', 'maintainer']), 
       });
     }
 
-    const result = await db.query(
+    if (scope === ARCHIVE_SCOPE.DEPARTMENT) {
+      const parsedYear = parseInt(year, 10);
+      const updateResult = await client.query(
+        `UPDATE org_dept_text_content
+         SET content_text = $1,
+             updated_at = NOW()
+         WHERE department_id = $2
+           AND unit_id IS NULL
+           AND year = $3
+           AND report_type = $4
+           AND category = $5
+         RETURNING *`,
+        [normalizedContent, department_id, parsedYear, report_type, category]
+      );
+
+      if (updateResult.rowCount > 0) {
+        return res.json({ text_content: updateResult.rows[0] });
+      }
+
+      const insertResult = await client.query(
+        `INSERT INTO org_dept_text_content 
+         (department_id, unit_id, year, report_type, category, content_text, created_by)
+         VALUES ($1, NULL, $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [department_id, parsedYear, report_type, category, normalizedContent, req.user.id]
+      );
+      return res.json({ text_content: insertResult.rows[0] });
+    }
+
+    const resolvedUnitId = await resolveArchiveUnitIdForDepartment({
+      client,
+      departmentId: department_id,
+      inputUnitId
+    });
+
+    const result = await client.query(
       `INSERT INTO org_dept_text_content 
-       (department_id, year, report_type, category, content_text, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       ON CONFLICT (department_id, year, report_type, category)
+       (department_id, unit_id, year, report_type, category, content_text, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (department_id, unit_id, year, report_type, category)
        DO UPDATE SET 
-         content_text = EXCLUDED.content_text,
-         updated_at = NOW()
+          content_text = EXCLUDED.content_text,
+          updated_at = NOW()
        RETURNING *`,
-      [department_id, parseInt(year), report_type, category, normalizedContent, req.user.id]
+      [department_id, resolvedUnitId, parseInt(year, 10), report_type, category, normalizedContent, req.user.id]
     );
 
     return res.json({ text_content: result.rows[0] });
   } catch (error) {
     return next(error);
+  } finally {
+    client.release();
   }
 });
 
@@ -2373,12 +2713,17 @@ router.get('/text-content/:deptId/:year/:category', requireAuth, requireRole(['a
   try {
     const { deptId, year, category } = req.params;
     const report_type = String(req.query.report_type || 'BUDGET').toUpperCase();
+    const unitId = req.query.unit_id ? String(req.query.unit_id) : null;
 
     const result = await db.query(
       `SELECT content_text
        FROM org_dept_text_content
-       WHERE department_id = $1 AND year = $2 AND report_type = $3 AND category = $4`,
-      [deptId, parseInt(year), report_type, category]
+       WHERE department_id = $1
+         AND year = $2
+         AND report_type = $3
+         AND category = $4
+         AND ($5::uuid IS NULL OR unit_id = $5)`,
+      [deptId, parseInt(year), report_type, category, unitId]
     );
 
     if (result.rows.length === 0) {
@@ -3301,53 +3646,24 @@ router.post('/save-budget-facts', requireAuth, requireRole(['admin', 'maintainer
     }
     const report = reportRes.rows[0];
 
-    let targetUnitId = unit_id || null;
-    if (targetUnitId) {
-      const unitCheck = await client.query(
-        `SELECT id
-         FROM org_unit
-         WHERE id = $1
-           AND department_id = $2`,
-        [targetUnitId, report.department_id]
-      );
-      if (unitCheck.rowCount === 0) {
-        throw new AppError({
-          statusCode: 400,
-          code: 'VALIDATION_ERROR',
-          message: 'unit_id does not belong to report department'
-        });
-      }
-    } else {
-      const fallbackUnit = await client.query(
-        `SELECT id
-         FROM org_unit
-         WHERE department_id = $1
-         ORDER BY sort_order ASC, created_at ASC
-         LIMIT 1`,
-        [report.department_id]
-      );
-      if (fallbackUnit.rowCount === 0) {
-        throw new AppError({
-          statusCode: 400,
-          code: 'VALIDATION_ERROR',
-          message: 'No unit found for report department'
-        });
-      }
-      targetUnitId = fallbackUnit.rows[0].id;
-    }
+    const targetUnitId = await resolveTargetUnitId({
+      client,
+      report,
+      inputUnitId: unit_id || null
+    });
 
     await client.query('BEGIN');
 
     await client.query(
       `INSERT INTO org_dept_text_content 
-         (department_id, year, report_type, category, content_text, source_report_id, created_by)
-         VALUES ($1, $2, $3, 'DATA_JSON', $4, $5, $6)
-         ON CONFLICT (department_id, year, report_type, category)
+         (department_id, unit_id, year, report_type, category, content_text, source_report_id, created_by)
+         VALUES ($1, $2, $3, $4, 'DATA_JSON', $5, $6, $7)
+         ON CONFLICT (department_id, unit_id, year, report_type, category)
          DO UPDATE SET 
-           content_text = EXCLUDED.content_text,
-           source_report_id = EXCLUDED.source_report_id,
-           updated_at = NOW()`,
-      [report.department_id, report.year, report.report_type, JSON.stringify(items), report_id, req.user.id]
+            content_text = EXCLUDED.content_text,
+            source_report_id = EXCLUDED.source_report_id,
+            updated_at = NOW()`,
+      [report.department_id, targetUnitId, report.year, report.report_type, JSON.stringify(items), report_id, req.user.id]
     );
 
     const tableDataRes = await client.query(
@@ -3477,3 +3793,10 @@ router.post('/save-budget-facts', requireAuth, requireRole(['admin', 'maintainer
 });
 
 module.exports = router;
+module.exports.__private = {
+  extractSectionsFromText,
+  extractExplanationSubSections,
+  extractOtherSubSections,
+  extractTablesFromText,
+  extractLineItemsFromTables
+};

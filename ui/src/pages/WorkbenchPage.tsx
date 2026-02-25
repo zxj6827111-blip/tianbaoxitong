@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { FileUpload } from '../components/workbench/FileUpload';
@@ -21,6 +21,7 @@ import {
   LogOut,
   PlayCircle,
   Settings,
+  Trash2,
   User
 } from 'lucide-react';
 
@@ -39,9 +40,17 @@ interface ValidationIssue {
   evidence?: {
     anchor?: string;
     item_key?: string;
+    manual_keys?: string[];
+    line_item_keys?: string[];
     missing_keys?: Array<{ key: string }>;
     [key: string]: any;
   };
+}
+
+interface IssueNavigationTarget {
+  step: DirectoryStepKey;
+  fieldKey?: InputFieldKey;
+  lineItemKey?: string;
 }
 
 interface DraftMeta {
@@ -60,6 +69,7 @@ interface RecentDraft {
   unit_name?: string | null;
   year: number;
   status: string;
+  report_type?: string | null;
   caliber?: string;
   file_name?: string | null;
   updated_at?: string | null;
@@ -120,6 +130,10 @@ interface DiffItem {
   previous_value: number | null;
   diff_value: number | null;
   diff_ratio: number | null;
+}
+
+interface LoadDraftContextOptions {
+  silentSuccessToast?: boolean;
 }
 
 const DIRECTORY_STEPS: DirectoryStepItem[] = [
@@ -212,6 +226,8 @@ const FIELD_TO_STEP: Partial<Record<InputFieldKey, DirectoryStepKey>> = {
   performance_result: 'section_project_expense'
 };
 
+const AUTO_LINE_ITEM_FOCUS_KEY = '__auto__';
+
 const PROJECT_EXPENSE_REQUIRED_FIELDS: Array<{ key: InputFieldKey; label: string }> = [
   { key: 'project_overview', label: '项目概述' },
   { key: 'project_basis', label: '立项依据' },
@@ -227,6 +243,23 @@ const formatDateTime = (value?: string | null) => {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('zh-CN', { hour12: false });
+};
+
+const canDeleteDraftByStatus = (status?: string | null) => {
+  const normalized = String(status || '').toUpperCase();
+  return normalized === 'DRAFT' || normalized === 'VALIDATED';
+};
+
+const resolveOrgLabel = (caliber?: string | null): '单位' | '部门' => {
+  return String(caliber || '').toLowerCase() === 'department' ? '部门' : '单位';
+};
+
+const resolveReportTypeLabel = (reportType?: string | null, fileName?: string | null): '预算' | '决算' => {
+  const normalized = String(reportType || '').toUpperCase();
+  if (normalized === 'FINAL') return '决算';
+  if (normalized === 'BUDGET') return '预算';
+  if (/决算|final/i.test(String(fileName || ''))) return '决算';
+  return '预算';
 };
 
 const formatAmount = (value: number | null | undefined) => {
@@ -337,6 +370,27 @@ const normalizeValidationIssues = (value: unknown): ValidationIssue[] => {
     }));
 };
 
+const resolveInputFieldKey = (value: unknown): InputFieldKey | undefined => {
+  if (typeof value !== 'string' || !value) {
+    return undefined;
+  }
+  if (!Object.prototype.hasOwnProperty.call(FIELD_TO_STEP, value)) {
+    return undefined;
+  }
+  return value as InputFieldKey;
+};
+
+const parseLineItemKeyFromAnchor = (anchor: string): string | undefined => {
+  if (!anchor.includes('line_items_reason')) {
+    return undefined;
+  }
+  const matched = anchor.match(/line_items_reason:([^|,\s]+)/);
+  if (!matched?.[1]) {
+    return undefined;
+  }
+  return matched[1].trim();
+};
+
 const textFilled = (inputsByKey: Map<string, ManualInput>, key: string) => {
   const value = inputsByKey.get(key)?.value_text;
   return typeof value === 'string' && value.trim().length > 0;
@@ -412,6 +466,7 @@ export const WorkbenchPage: React.FC = () => {
   const [recentDrafts, setRecentDrafts] = useState<RecentDraft[]>([]);
   const [loadingDrafts, setLoadingDrafts] = useState(false);
   const [loadingDraftContext, setLoadingDraftContext] = useState(false);
+  const [deletingDraftId, setDeletingDraftId] = useState<string | null>(null);
   const [loadingReviewData, setLoadingReviewData] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isLoadingPreviewFile, setIsLoadingPreviewFile] = useState(false);
@@ -427,6 +482,8 @@ export const WorkbenchPage: React.FC = () => {
   const [diffItems, setDiffItems] = useState<DiffItem[]>([]);
   const [liveCompletion, setLiveCompletion] = useState<Partial<Record<ManualFormSection, boolean>>>({});
   const [focusRequest, setFocusRequest] = useState<{ key: InputFieldKey; nonce: number } | null>(null);
+  const [lineItemFocusRequest, setLineItemFocusRequest] = useState<{ itemKey?: string; nonce: number } | null>(null);
+  const autoResumeAttemptedRef = useRef(false);
 
   const isAdminView = user?.role === 'admin' || user?.role === 'maintainer';
 
@@ -564,11 +621,17 @@ export const WorkbenchPage: React.FC = () => {
   const loadRecentDrafts = useCallback(async () => {
     try {
       setLoadingDrafts(true);
-      const response = await apiClient.listDrafts({ limit: 8 });
+      const response = await apiClient.listDrafts({ limit: 30 });
       setRecentDrafts(response.drafts || []);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to load recent drafts:', error);
-      toast.error('加载草稿列表失败');
+      const backendMessage = error?.response?.data?.message;
+      const status = error?.response?.status;
+      toast.error(
+        backendMessage
+          ? `加载草稿列表失败：${backendMessage}`
+          : `加载草稿列表失败${status ? ` (${status})` : ''}`
+      );
     } finally {
       setLoadingDrafts(false);
     }
@@ -596,7 +659,7 @@ export const WorkbenchPage: React.FC = () => {
     }
   }, []);
 
-  const loadDraftContext = useCallback(async (targetDraftId: string) => {
+  const loadDraftContext = useCallback(async (targetDraftId: string, options?: LoadDraftContextOptions) => {
     if (!isUsableDraftId(targetDraftId)) {
       toast.error('草稿ID无效，请从“最近草稿”重新进入');
       return;
@@ -628,15 +691,58 @@ export const WorkbenchPage: React.FC = () => {
       setStage('directory');
       setCurrentStep('section_main_functions');
       localStorage.setItem(LAST_DRAFT_KEY, String(targetDraftId));
-      toast.success(`已进入草稿 #${targetDraftId}`);
+      if (!options?.silentSuccessToast) {
+        toast.success(`已进入草稿 #${targetDraftId}`);
+      }
     } catch (error: any) {
       console.error('Failed to load draft:', error);
+      const status = Number(error?.response?.status || 0);
+      const code = String(error?.response?.data?.code || '');
+      if (status === 404 || code === 'DRAFT_NOT_FOUND' || code === 'NOT_FOUND' || code === 'FORBIDDEN') {
+        if (localStorage.getItem(LAST_DRAFT_KEY) === targetDraftId) {
+          localStorage.removeItem(LAST_DRAFT_KEY);
+        }
+      }
       const message = error?.response?.data?.message || '加载草稿失败';
       toast.error(message);
     } finally {
       setLoadingDraftContext(false);
     }
   }, [previewBlobUrl, toast.error, toast.success]);
+
+  const handleDeleteDraft = useCallback(async (targetDraft: RecentDraft) => {
+    const targetDraftId = String(targetDraft.id || '');
+    if (!isUsableDraftId(targetDraftId)) {
+      toast.error('草稿ID无效，无法删除');
+      return;
+    }
+
+    if (!canDeleteDraftByStatus(targetDraft.status)) {
+      toast.error('仅支持删除 DRAFT 或 VALIDATED 状态的草稿');
+      return;
+    }
+
+    if (!window.confirm(`确定删除草稿 #${targetDraftId} 吗？此操作不可恢复。`)) {
+      return;
+    }
+
+    try {
+      setDeletingDraftId(targetDraftId);
+      await apiClient.deleteDraft(targetDraftId);
+
+      setRecentDrafts((prev) => prev.filter((item) => String(item.id) !== targetDraftId));
+      if (localStorage.getItem(LAST_DRAFT_KEY) === targetDraftId) {
+        localStorage.removeItem(LAST_DRAFT_KEY);
+      }
+
+      toast.success(`草稿 #${targetDraftId} 已删除`);
+    } catch (error: any) {
+      const message = error?.response?.data?.message || '删除草稿失败';
+      toast.error(message);
+    } finally {
+      setDeletingDraftId((prev) => (prev === targetDraftId ? null : prev));
+    }
+  }, [toast.error, toast.success]);
 
   useEffect(() => {
     if (stage === 'entry') {
@@ -645,20 +751,19 @@ export const WorkbenchPage: React.FC = () => {
   }, [stage, loadRecentDrafts]);
 
   useEffect(() => {
-    if (stage !== 'entry' || recentDrafts.length === 0) {
+    if (stage !== 'entry' || autoResumeAttemptedRef.current) {
       return;
     }
+    autoResumeAttemptedRef.current = true;
 
     const lastDraftId = localStorage.getItem(LAST_DRAFT_KEY);
     if (!isUsableDraftId(lastDraftId)) {
       return;
     }
 
-    const exists = recentDrafts.some((item) => String(item.id) === lastDraftId);
-    if (!exists) {
-      localStorage.removeItem(LAST_DRAFT_KEY);
-    }
-  }, [stage, recentDrafts]);
+    // Refresh should recover the last active draft even if it is outside "recent N" list.
+    void loadDraftContext(lastDraftId, { silentSuccessToast: true });
+  }, [stage, loadDraftContext]);
 
   useEffect(() => {
     if (stage === 'directory' && (currentStep === 'preview_review' || currentStep === 'download_export') && draftId) {
@@ -1008,37 +1113,70 @@ export const WorkbenchPage: React.FC = () => {
     }
   };
 
-  const jumpToField = (step: DirectoryStepKey, fieldKey?: InputFieldKey) => {
+  const jumpToField = (step: DirectoryStepKey, fieldKey?: InputFieldKey, lineItemKey?: string) => {
     setCurrentStep(step);
     if (fieldKey) {
       setFocusRequest({
         key: fieldKey,
         nonce: Date.now()
       });
+    } else {
+      setFocusRequest(null);
+    }
+    if (lineItemKey) {
+      setLineItemFocusRequest({
+        itemKey: lineItemKey,
+        nonce: Date.now()
+      });
+    } else {
+      setLineItemFocusRequest(null);
     }
   };
 
-  const resolveIssueNavigation = (issue: ValidationIssue): { step: DirectoryStepKey; fieldKey?: InputFieldKey } => {
+  const resolveIssueNavigation = (issue: ValidationIssue): IssueNavigationTarget => {
+    const evidence = issue.evidence || {};
+    const anchor = String(evidence.anchor || '');
+    const lineItemFromAnchor = parseLineItemKeyFromAnchor(anchor);
+
     if (issue.rule_id === 'REASON_REQUIRED_MISSING') {
-      return { step: 'section_budget_explanation' };
+      return {
+        step: 'section_budget_explanation',
+        lineItemKey: typeof evidence.item_key === 'string' && evidence.item_key
+          ? evidence.item_key
+          : (lineItemFromAnchor || AUTO_LINE_ITEM_FOCUS_KEY)
+      };
     }
 
-    const evidence = issue.evidence || {};
-    const missingKey = evidence?.missing_keys?.[0]?.key as InputFieldKey | undefined;
-    if (missingKey && FIELD_TO_STEP[missingKey]) {
+    const missingKey = resolveInputFieldKey(evidence?.missing_keys?.[0]?.key);
+    if (missingKey) {
       return { step: FIELD_TO_STEP[missingKey] as DirectoryStepKey, fieldKey: missingKey };
     }
 
-    const anchor = String(evidence.anchor || '');
+    const manualKey = resolveInputFieldKey(evidence?.manual_keys?.[0]);
+    if (manualKey) {
+      return { step: FIELD_TO_STEP[manualKey] as DirectoryStepKey, fieldKey: manualKey };
+    }
+
+    const lineItemKey = typeof evidence?.line_item_keys?.[0] === 'string'
+      ? String(evidence.line_item_keys[0]).trim()
+      : undefined;
+    if (lineItemKey) {
+      return { step: 'section_budget_explanation', lineItemKey };
+    }
+
     if (anchor.startsWith('manual_inputs:')) {
-      const key = anchor.replace('manual_inputs:', '').split(',')[0] as InputFieldKey;
-      if (FIELD_TO_STEP[key]) {
+      const key = resolveInputFieldKey(anchor.replace('manual_inputs:', '').split(',')[0]);
+      if (key) {
         return { step: FIELD_TO_STEP[key] as DirectoryStepKey, fieldKey: key };
       }
     }
 
     if (anchor.includes('line_items_reason')) {
-      return { step: 'section_budget_explanation' };
+      return { step: 'section_budget_explanation', lineItemKey: lineItemFromAnchor || AUTO_LINE_ITEM_FOCUS_KEY };
+    }
+
+    if (anchor === 'quality_placeholder_check') {
+      return { step: 'section_budget_explanation', lineItemKey: AUTO_LINE_ITEM_FOCUS_KEY };
     }
 
     return { step: 'preview_review' };
@@ -1121,18 +1259,47 @@ export const WorkbenchPage: React.FC = () => {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
               {recentDrafts.map((item) => (
-                <button
+                <div
                   key={item.id}
-                  type="button"
-                  onClick={() => void loadDraftContext(String(item.id))}
-                  className="rounded-lg border border-slate-200 p-4 text-left hover:border-brand-300 hover:bg-slate-50 transition-colors"
+                  className="rounded-lg border border-slate-200 p-4 hover:border-brand-300 hover:bg-slate-50 transition-colors"
                 >
-                  <p className="text-sm font-semibold text-slate-800">草稿 #{item.id}</p>
-                  <p className="text-xs text-slate-500 mt-1">单位: {item.unit_name || item.unit_id}</p>
-                  <p className="text-xs text-slate-500">年度: {item.year} | 口径: {item.caliber || '-'}</p>
-                  <p className="text-xs text-slate-500">状态: {item.status}</p>
-                  <p className="text-xs text-slate-400 mt-2">更新: {formatDateTime(item.updated_at)}</p>
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => void loadDraftContext(String(item.id))}
+                    className="w-full text-left space-y-3"
+                  >
+                    <div className="rounded-md bg-slate-50 px-3 py-2">
+                      <p className="text-xs text-slate-500">{resolveOrgLabel(item.caliber)}</p>
+                      <p className="text-base font-bold text-slate-900 mt-1 leading-snug">{item.unit_name || item.unit_id}</p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div className="rounded-md bg-slate-50 px-3 py-2">
+                        <p className="text-xs text-slate-500">年度</p>
+                        <p className="text-lg font-bold text-slate-900 mt-1">{item.year}</p>
+                      </div>
+                      <div className="rounded-md bg-slate-50 px-3 py-2">
+                        <p className="text-xs text-slate-500">类型</p>
+                        <p className="text-lg font-bold text-brand-700 mt-1">{resolveReportTypeLabel(item.report_type, item.file_name)}</p>
+                      </div>
+                    </div>
+                    <p className="text-sm text-slate-500">更新: {formatDateTime(item.updated_at)}</p>
+                  </button>
+                  <div className="mt-3 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteDraft(item)}
+                      disabled={
+                        deletingDraftId === String(item.id)
+                        || !canDeleteDraftByStatus(item.status)
+                      }
+                      title={canDeleteDraftByStatus(item.status) ? '删除草稿' : '仅 DRAFT/VALIDATED 状态可删除'}
+                      className="inline-flex items-center gap-1 rounded-md border border-red-200 px-2.5 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>{deletingDraftId === String(item.id) ? '删除中...' : '删除'}</span>
+                    </button>
+                  </div>
+                </div>
               ))}
             </div>
           )}
@@ -1240,7 +1407,7 @@ export const WorkbenchPage: React.FC = () => {
             onIssuesChange={(nextIssues) => setIssues(nextIssues)}
             onIssueClick={(issue) => {
               const target = resolveIssueNavigation(issue);
-              jumpToField(target.step, target.fieldKey);
+              jumpToField(target.step, target.fieldKey, target.lineItemKey);
             }}
           />
         </div>
@@ -1411,6 +1578,7 @@ export const WorkbenchPage: React.FC = () => {
                   onDraftUpdated={handleBudgetDraftUpdated}
                   onCompletionChange={handleBudgetCompletionChange}
                   focusRequest={focusRequest?.key === 'budget_explanation' || focusRequest?.key === 'budget_change_reason' ? focusRequest : null}
+                  lineItemFocusRequest={lineItemFocusRequest}
                   unitName={draftMeta?.unit_name || ''}
                 />
               ) : currentStepConfig.section === 'other_related' ? (
@@ -1486,12 +1654,19 @@ export const WorkbenchPage: React.FC = () => {
 
       <header className="bg-white/80 backdrop-blur-md sticky top-0 z-50 border-b border-slate-200 shadow-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold text-lg shadow-sm">
+          <button
+            type="button"
+            onClick={() => {
+              setUploadMode('normal');
+              setStage('entry');
+            }}
+            className="flex items-center gap-2 hover:opacity-80 transition-opacity group text-left"
+          >
+            <div className="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center text-white font-bold text-lg shadow-sm group-hover:bg-brand-700 transition-colors">
               T
             </div>
             <h1 className="text-lg font-bold text-slate-900 tracking-tight">预决算报告智能生成系统</h1>
-          </div>
+          </button>
 
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 rounded-full border border-slate-200">

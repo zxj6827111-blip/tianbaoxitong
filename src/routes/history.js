@@ -1,16 +1,12 @@
 const express = require('express');
 const { AppError } = require('../errors');
-const { requireAuth } = require('../middleware/auth');
+const db = require('../db');
+const { requireAuth, requireScope } = require('../middleware/auth');
 const { HISTORY_ACTUAL_KEYS } = require('../services/historyActualsConfig');
 const { lookupHistoryActuals } = require('../repositories/historyRepository');
 const { fetchLatestSuggestions } = require('../repositories/suggestionRepository');
 
 const router = express.Router();
-
-const isAdminLike = (user) => {
-  const roles = user?.roles || [];
-  return roles.includes('admin') || roles.includes('maintainer');
-};
 
 const parseKeys = (value) => {
   if (!value) {
@@ -22,7 +18,7 @@ const parseKeys = (value) => {
   return String(value).split(',');
 };
 
-router.get('/lookup', requireAuth, async (req, res, next) => {
+router.get('/lookup', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const unitId = req.query.unit_id;
     const year = Number(req.query.year);
@@ -60,14 +56,43 @@ router.get('/lookup', requireAuth, async (req, res, next) => {
       });
     }
 
-    if (!isAdminLike(req.user)) {
-      const requesterUnitId = req.user?.unit_id ? String(req.user.unit_id) : null;
-      if (!requesterUnitId || requesterUnitId !== String(unitId)) {
+    if (!req.scopeMeta?.isAdminLike && req.scopeFilter) {
+      if (Array.isArray(req.scopeFilter.unit_ids) && req.scopeFilter.unit_ids.length > 0) {
+        const allowed = req.scopeFilter.unit_ids.some((candidate) => String(candidate) === String(unitId));
+        if (!allowed) {
+          throw new AppError({
+            statusCode: 403,
+            code: 'FORBIDDEN',
+            message: 'No permission to access this unit history'
+          });
+        }
+      } else if (req.scopeFilter.unit_id && String(req.scopeFilter.unit_id) !== String(unitId)) {
         throw new AppError({
           statusCode: 403,
           code: 'FORBIDDEN',
           message: 'No permission to access this unit history'
         });
+      }
+
+      if (
+        !(Array.isArray(req.scopeFilter.unit_ids) && req.scopeFilter.unit_ids.length > 0)
+        && !req.scopeFilter.unit_id
+        && req.scopeFilter.department_id
+      ) {
+        const unitScopeCheck = await db.query(
+          `SELECT 1
+           FROM org_unit
+           WHERE id = $1
+             AND department_id = $2`,
+          [unitId, req.scopeFilter.department_id]
+        );
+        if (unitScopeCheck.rowCount === 0) {
+          throw new AppError({
+            statusCode: 403,
+            code: 'FORBIDDEN',
+            message: 'No permission to access this unit history'
+          });
+        }
       }
     }
 

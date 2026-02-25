@@ -253,6 +253,41 @@ const extractFromFiscalGrantSummary = (rows) => {
   return result;
 };
 
+const createZeroThreePublicResult = () => ({
+  three_public_total: 0,
+  three_public_outbound: 0,
+  three_public_reception: 0,
+  three_public_vehicle_total: 0,
+  three_public_vehicle_purchase: 0,
+  three_public_vehicle_operation: 0,
+  operation_fund: 0
+});
+
+const isThreePublicDeclaredEmpty = ({ rows, tableText }) => {
+  const compactTableText = compactText(tableText || '');
+  if (!compactTableText) return false;
+
+  const hasEmptyMarker = compactTableText.includes('\u7a7a\u8868');
+  const hasNoBudgetMarker = compactTableText.includes('\u65e0')
+    && compactTableText.includes('\u4e09\u516c')
+    && compactTableText.includes('\u673a\u5173\u8fd0\u884c\u7ecf\u8d39')
+    && compactTableText.includes('\u9884\u7b97');
+  const hasEmptyStructureMarkers = compactTableText.includes('\u4e09\u516c')
+    && compactTableText.includes('\u673a\u5173\u8fd0\u884c\u7ecf\u8d39')
+    && compactTableText.includes('\u5408\u8ba1')
+    && compactTableText.includes('\u56e0\u516c\u51fa\u56fd')
+    && compactTableText.includes('\u516c\u52a1\u63a5\u5f85\u8d39')
+    && compactTableText.includes('\u516c\u52a1\u7528\u8f66');
+  if (!hasEmptyMarker && !hasNoBudgetMarker && !hasEmptyStructureMarkers) return false;
+
+  const numericCellCount = (Array.isArray(rows) ? rows : []).reduce((count, row) => {
+    if (!Array.isArray(row)) return count;
+    return count + row.filter((cell) => parseNumber(cell) !== null).length;
+  }, 0);
+
+  return numericCellCount === 0;
+};
+
 const extractFromThreePublic = (rows) => {
   const scale = detectScaleToWanyuan(rows, { defaultScale: 1, tableKey: 'three_public' });
   const tableText = rowsToText(rows, 20);
@@ -267,13 +302,19 @@ const extractFromThreePublic = (rows) => {
     .reverse()
     .find((row) => Array.isArray(row) && row.filter((cell) => parseNumber(cell) !== null).length >= 2);
 
-  if (!dataRow) return {};
+  if (!dataRow) {
+    if (isThreePublicDeclaredEmpty({ rows, tableText })) return createZeroThreePublicResult();
+    return {};
+  }
 
   const nums = dataRow
     .map((cell) => parseNumber(cell))
     .filter((n) => n !== null)
     .map((n) => n * scale);
-  if (nums.length < 2) return {};
+  if (nums.length < 2) {
+    if (isThreePublicDeclaredEmpty({ rows, tableText })) return createZeroThreePublicResult();
+    return {};
+  }
 
   const result = {
     three_public_total: nums[0] ?? null,

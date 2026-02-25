@@ -5,7 +5,8 @@ import ArchivePreviewPanel from './ArchivePreviewPanel';
 
 interface ArchivePanelProps {
   departmentId: string;
-  unitId: string;
+  unitId?: string | null;
+  archiveScope?: 'unit' | 'department';
   year: number;
   historyYearCount?: number;
   onYearChange?: (year: number) => void;
@@ -26,6 +27,12 @@ interface TextContent {
   category: string;
   content_text: string;
   updated_at: string;
+}
+
+interface UnitOption {
+  id: string;
+  code: string;
+  name: string;
 }
 
 type ReportType = 'BUDGET' | 'FINAL';
@@ -50,6 +57,10 @@ type ArchiveLineItem = {
 };
 
 type FiscalLineItemReference = {
+  classCode: string;
+  typeCode: string;
+  itemCode: string;
+  combinedCode: string;
   className: string;
   typeName: string;
   itemName: string;
@@ -215,6 +226,8 @@ const normalizeFiscalText = (value: string) => String(value || '')
   .replace(/[（）()【】[\]、，。,:：；;·]/g, '')
   .trim();
 
+const normalizeFiscalCode = (value: string) => String(value || '').replace(/\D/g, '').trim();
+
 const isIgnoredFiscalDetailLine = (value: string) => {
   const normalized = normalizeFiscalText(value);
   if (!normalized) return false;
@@ -275,7 +288,15 @@ const buildFiscalLineItemReferences = (rows: ArchiveLineItem[]): FiscalLineItemR
     if (seen.has(signature)) return;
     seen.add(signature);
 
+    const normalizedClassCode = normalizeFiscalCode(classCode);
+    const normalizedTypeCode = normalizeFiscalCode(typeCode);
+    const normalizedItemCode = normalizeFiscalCode(itemCode);
+
     references.push({
+      classCode: normalizedClassCode,
+      typeCode: normalizedTypeCode,
+      itemCode: normalizedItemCode,
+      combinedCode: `${normalizedClassCode}${normalizedTypeCode}${normalizedItemCode}`,
       className,
       typeName,
       itemName,
@@ -299,10 +320,35 @@ const inferFiscalLevelsByReference = (item: FiscalUsageItem, lineItemRefs: Fisca
   if (!sourceName) return item;
   if (isIgnoredFiscalDetailLine(sourceName)) return item;
 
+  const codeAndNameMatch = sourceName.match(/^(\d{6,9})(?:\s+|[-—－_/／]*)?(.*)$/);
+  const sourceCode = normalizeFiscalCode(codeAndNameMatch?.[1] || '');
+  const sourceNameWithoutCode = codeAndNameMatch ? String(codeAndNameMatch[2] || '').trim() : '';
+
+  if (sourceCode) {
+    const codeMatchedRef = lineItemRefs.find((ref) => {
+      if (!ref.combinedCode) return false;
+      return sourceCode === ref.combinedCode || sourceCode.endsWith(ref.combinedCode);
+    });
+    if (codeMatchedRef) {
+      return {
+        ...item,
+        className: hasClass ? item.className : codeMatchedRef.className,
+        typeName: hasType ? item.typeName : codeMatchedRef.typeName,
+        itemName: sourceNameWithoutCode || codeMatchedRef.itemName
+      };
+    }
+  }
+
   const normalizedSource = normalizeFiscalText(sourceName);
   if (!normalizedSource) return item;
+  const normalizedSourceWithoutCode = sourceNameWithoutCode ? normalizeFiscalText(sourceNameWithoutCode) : '';
+  const normalizedCandidates = [{ value: normalizedSource, strippedCode: false }];
+  if (normalizedSourceWithoutCode && normalizedSourceWithoutCode !== normalizedSource) {
+    normalizedCandidates.push({ value: normalizedSourceWithoutCode, strippedCode: true });
+  }
 
-  const sourceSegments = sourceName
+  const sourceNameForSegment = sourceNameWithoutCode || sourceName;
+  const sourceSegments = sourceNameForSegment
     .split(/[-—－_/／]+/)
     .map((segment) => segment.trim())
     .filter(Boolean);
@@ -330,34 +376,44 @@ const inferFiscalLevelsByReference = (item: FiscalUsageItem, lineItemRefs: Fisca
 
   let bestRef: FiscalLineItemReference | null = null;
   let bestScore = 0;
+  let bestUsedStrippedCode = false;
 
   lineItemRefs.forEach((ref) => {
-    const hasItem = Boolean(ref.normalizedItem) && normalizedSource.includes(ref.normalizedItem);
-    const hasClassToken = Boolean(ref.normalizedClass) && normalizedSource.includes(ref.normalizedClass);
-    const hasTypeToken = Boolean(ref.normalizedType) && normalizedSource.includes(ref.normalizedType);
-    if (!hasItem && !hasClassToken && !hasTypeToken) return;
+    normalizedCandidates.forEach((candidate) => {
+      const hasItem = Boolean(ref.normalizedItem) && candidate.value.includes(ref.normalizedItem);
+      const hasClassToken = Boolean(ref.normalizedClass) && candidate.value.includes(ref.normalizedClass);
+      const hasTypeToken = Boolean(ref.normalizedType) && candidate.value.includes(ref.normalizedType);
+      if (!hasItem && !hasClassToken && !hasTypeToken) return;
 
-    let score = 0;
-    if (hasItem) score += 100;
-    if (hasClassToken) score += 70;
-    if (hasTypeToken) score += 90;
-    if (normalizedSource === ref.normalizedItem) score += 120;
-    if (hasItem && hasTypeToken) score += 80;
-    if (hasItem && hasClassToken) score += 40;
+      let score = 0;
+      if (hasItem) score += candidate.strippedCode ? 140 : 100;
+      if (hasClassToken) score += 70;
+      if (hasTypeToken) score += 90;
+      if (candidate.value === ref.normalizedItem) score += 120;
+      if (candidate.strippedCode && hasItem) score += 40;
+      if (hasItem && hasTypeToken) score += 80;
+      if (hasItem && hasClassToken) score += 40;
 
-    if (score > bestScore) {
-      bestScore = score;
-      bestRef = ref;
-    }
+      if (score > bestScore) {
+        bestScore = score;
+        bestRef = ref;
+        bestUsedStrippedCode = candidate.strippedCode;
+      }
+    });
   });
 
-  if (!bestRef || bestScore < 160) return item;
+  if (!bestRef || bestScore < 150) return item;
+  const matchedItemByName = normalizedCandidates.some(
+    (candidate) => Boolean(bestRef?.normalizedItem) && candidate.value.includes(bestRef.normalizedItem)
+  );
 
   return {
     ...item,
     className: hasClass ? item.className : bestRef.className,
     typeName: hasType ? item.typeName : bestRef.typeName,
-    itemName: normalizedSource.includes(bestRef.normalizedItem) ? bestRef.itemName : item.itemName
+    itemName: bestUsedStrippedCode && sourceNameWithoutCode
+      ? sourceNameWithoutCode
+      : (matchedItemByName ? bestRef.itemName : item.itemName)
   };
 };
 
@@ -664,13 +720,21 @@ const normalizeYears = (items: unknown): number[] => {
 const ArchivePanel: React.FC<ArchivePanelProps> = ({
   departmentId,
   unitId,
+  archiveScope = 'unit',
   year,
   historyYearCount = 0,
   onYearChange,
   onFactsSaved
 }) => {
+  const isDepartmentScope = archiveScope === 'department';
+  const explicitUnitId = unitId ? String(unitId).trim() : '';
+  const hasUnitContext = !isDepartmentScope && Boolean(explicitUnitId);
   const [reports, setReports] = useState<Report[]>([]);
   const [textContent, setTextContent] = useState<TextContent[]>([]);
+  const [departmentUnits, setDepartmentUnits] = useState<UnitOption[]>([]);
+  const [selectedTargetUnitId, setSelectedTargetUnitId] = useState<string>('');
+  const [unitsLoading, setUnitsLoading] = useState(false);
+  const [unitsError, setUnitsError] = useState<string | null>(null);
   const [archiveYear, setArchiveYear] = useState<number>(year);
   const [archiveYearOptions, setArchiveYearOptions] = useState<number[]>([year]);
   const [manualYearOptions, setManualYearOptions] = useState<number[]>([]);
@@ -694,6 +758,13 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   const [globalMessage, setGlobalMessage] = useState<string | null>(null);
   const [fiscalItemsMap, setFiscalItemsMap] = useState<Record<string, FiscalUsageItem[]>>({});
   const [archiveLineItems, setArchiveLineItems] = useState<ArchiveLineItem[]>([]);
+  const effectiveUnitId = hasUnitContext ? explicitUnitId : (isDepartmentScope ? '' : selectedTargetUnitId);
+  const hasTargetUnitContext = !isDepartmentScope && Boolean(effectiveUnitId);
+  const previewUnitId = hasTargetUnitContext
+    ? String(effectiveUnitId)
+    : (isDepartmentScope ? String(selectedTargetUnitId || '') : '');
+  const hasPreviewUnitContext = Boolean(previewUnitId);
+  const hasArchiveContext = isDepartmentScope || hasTargetUnitContext;
 
   const fiscalSectionRef = useRef<HTMLDivElement | null>(null);
 
@@ -708,11 +779,11 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
 
   useEffect(() => {
     loadArchives();
-  }, [departmentId, archiveYear, selectedType]);
+  }, [departmentId, archiveYear, selectedType, effectiveUnitId, hasUnitContext, isDepartmentScope]);
 
   useEffect(() => {
     loadArchiveYears();
-  }, [departmentId, year]);
+  }, [departmentId, year, unitId, effectiveUnitId, hasUnitContext, isDepartmentScope]);
 
   useEffect(() => {
     setDrafts((prev) => {
@@ -779,9 +850,26 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   }, [hasUnsavedChanges]);
 
   const loadArchives = async (targetYear: number = archiveYear) => {
+    if (!hasArchiveContext) {
+      setReports([]);
+      setTextContent([]);
+      setArchiveLineItems([]);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
-      const response = await fetch(`/api/admin/archives/departments/${departmentId}/years/${targetYear}?report_type=${selectedType}`, {
+      const query = new URLSearchParams({
+        report_type: selectedType
+      });
+      if (isDepartmentScope) {
+        query.set('scope', 'department');
+      } else {
+        query.set('unit_id', String(effectiveUnitId));
+      }
+      const response = await fetch(
+        `/api/admin/archives/departments/${departmentId}/years/${targetYear}?${query.toString()}`,
+        {
         headers: {
           Authorization: `Bearer ${localStorage.getItem('auth_token')}`
         }
@@ -805,6 +893,55 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     }
   };
 
+  const loadDepartmentUnits = async (targetYear: number = archiveYear) => {
+    if (hasUnitContext) return;
+
+    setUnitsLoading(true);
+    setUnitsError(null);
+    try {
+      const response = await fetch(
+        `/api/admin/units?department_id=${encodeURIComponent(departmentId)}&year=${targetYear}&page=1&pageSize=200`,
+        {
+          headers: {
+            Authorization: `Bearer ${localStorage.getItem('auth_token')}`
+          }
+        }
+      );
+
+      if (!response.ok) {
+        throw new Error('加载下属单位失败');
+      }
+
+      const data = await response.json();
+      const list: UnitOption[] = (Array.isArray(data.units) ? data.units : [])
+        .map((item: any) => ({
+          id: String(item?.id || ''),
+          code: String(item?.code || ''),
+          name: String(item?.name || '')
+        }))
+        .filter((item) => item.id);
+
+      setDepartmentUnits(list);
+      setSelectedTargetUnitId((prev) => {
+        if (list.length === 0) return '';
+        if (prev && list.some((item) => item.id === prev)) return prev;
+        if (isDepartmentScope) {
+          const preferred = list.find((item) => /本级/.test(String(item.name || '')));
+          return preferred?.id || list[0].id;
+        }
+        if (list.length === 1) return list[0].id;
+        return '';
+      });
+    } catch (error) {
+      console.error('Failed to load department units:', error);
+      setDepartmentUnits([]);
+      setSelectedTargetUnitId('');
+      setUnitsError(error instanceof Error ? error.message : '加载下属单位失败');
+    } finally {
+      setUnitsLoading(false);
+    }
+  };
+
   const loadArchiveYears = async (options?: {
     preserveCurrentYear?: boolean;
     currentYear?: number;
@@ -818,17 +955,23 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     };
 
     try {
-      const [archiveResult, historyResult] = await Promise.allSettled([
-        fetch(`/api/admin/archives/departments/${departmentId}/years`, { headers: authHeaders }),
-        fetch(`/api/admin/history/units/${unitId}/years`, { headers: authHeaders })
-      ]);
+      const archiveUrl = isDepartmentScope
+        ? `/api/admin/archives/departments/${departmentId}/years?scope=department`
+        : (hasTargetUnitContext
+          ? `/api/admin/archives/departments/${departmentId}/years?unit_id=${encodeURIComponent(String(effectiveUnitId))}`
+          : `/api/admin/archives/departments/${departmentId}/years`);
+      const archiveResponse = await fetch(archiveUrl, { headers: authHeaders });
+      const archiveYears = archiveResponse.ok
+        ? normalizeYears((await archiveResponse.json()).years)
+        : [];
 
-      const archiveYears = (archiveResult.status === 'fulfilled' && archiveResult.value.ok)
-        ? normalizeYears((await archiveResult.value.json()).years)
-        : [];
-      const historyYears = (historyResult.status === 'fulfilled' && historyResult.value.ok)
-        ? normalizeYears((await historyResult.value.json()).years)
-        : [];
+      let historyYears: number[] = [];
+      if (!isDepartmentScope && hasTargetUnitContext) {
+        const historyResponse = await fetch(`/api/admin/history/units/${encodeURIComponent(String(effectiveUnitId))}/years`, { headers: authHeaders });
+        historyYears = historyResponse.ok
+          ? normalizeYears((await historyResponse.json()).years)
+          : [];
+      }
 
       const mergedYears = [...archiveYears, ...historyYears, ...manualYearOptions];
       if (preserveCurrentYear && Number.isInteger(currentYear)) {
@@ -850,6 +993,11 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
       return fallbackYears;
     }
   };
+
+  useEffect(() => {
+    if (hasUnitContext) return;
+    void loadDepartmentUnits();
+  }, [hasUnitContext, departmentId, archiveYear]);
 
   const updateArchiveYear = (nextYear: number) => {
     setArchiveYearOptions((prev) => (
@@ -903,6 +1051,11 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   };
 
   const handleDeleteArchiveYear = async () => {
+    if (!hasArchiveContext) {
+      alert('请先选择入库单位，再删除归档年份。');
+      return;
+    }
+
     if (archiveYearOptions.length <= 1) {
       alert('至少保留 1 个入库年份，无法继续删除。');
       return;
@@ -916,14 +1069,17 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     }
 
     const confirmed = window.confirm(
-      `确认删除 ${archiveYear} 年吗？\n将删除该年已上传文件、文本内容、表格数据，以及该单位该年的自动入库数值（archive_parse）。此操作不可恢复。`
+      `确认删除 ${archiveYear} 年吗？\n将删除该${isDepartmentScope ? '部门' : '单位'}该年的已上传文件、文本内容、表格数据，以及自动入库数值（archive_parse）。此操作不可恢复。`
     );
     if (!confirmed) return;
 
     setDeletingYear(true);
     try {
+      const deleteUrl = isDepartmentScope
+        ? `/api/admin/archives/departments/${departmentId}/years/${archiveYear}?scope=department`
+        : `/api/admin/archives/departments/${departmentId}/years/${archiveYear}?unit_id=${encodeURIComponent(String(effectiveUnitId))}`;
       const response = await fetch(
-        `/api/admin/archives/departments/${departmentId}/years/${archiveYear}?unit_id=${encodeURIComponent(unitId)}`,
+        deleteUrl,
         {
           method: 'DELETE',
           headers: {
@@ -961,6 +1117,11 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || !e.target.files[0]) return;
+    if (!hasArchiveContext) {
+      alert('请先选择入库单位后再上传。');
+      e.target.value = '';
+      return;
+    }
 
     const file = e.target.files[0];
     let uploadYear = archiveYear;
@@ -991,6 +1152,11 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
       const formData = new FormData();
       formData.append('file', file);
       formData.append('department_id', departmentId);
+      if (isDepartmentScope) {
+        formData.append('scope', 'department');
+      } else {
+        formData.append('unit_id', String(effectiveUnitId));
+      }
       formData.append('year', String(uploadYear));
       formData.append('report_type', selectedType);
 
@@ -1006,6 +1172,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
         const data = await response.json().catch(() => ({}));
         throw new Error(data.message || '上传失败');
       }
+      const uploadResult = await response.json().catch(() => ({}));
 
       await loadArchives(uploadYear);
       await loadArchiveYears();
@@ -1013,7 +1180,12 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
         updateArchiveYear(uploadYear);
       }
       setPreviewRefreshKey((value) => value + 1);
-      alert('上传成功，请点击“提取数据”创建解析确认批次。');
+      const extractedTextLength = Number(uploadResult?.extracted_text_length || 0);
+      if (extractedTextLength <= 0) {
+        alert('上传成功，但未提取到可用文本（常见于扫描件）。已清空旧解析内容，请先做 OCR 或更换可复制文本的 PDF。');
+      } else {
+        alert(isDepartmentScope ? '上传成功。' : '上传成功，请点击“提取数据”创建解析确认批次。');
+      }
     } catch (error: unknown) {
       console.error('Upload error:', error);
       const message = error instanceof Error ? error.message : String(error);
@@ -1028,6 +1200,11 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     const key = buildDraftKey(selectedType, category);
     const trimmedContent = content.trim();
 
+    if (!hasArchiveContext) {
+      setSaveErrorMap((prev) => ({ ...prev, [key]: '请先选择入库单位' }));
+      return false;
+    }
+
     if (!trimmedContent) {
       setSaveErrorMap((prev) => ({ ...prev, [key]: '内容不能为空' }));
       return false;
@@ -1037,19 +1214,26 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
     setSaveErrorMap((prev) => ({ ...prev, [key]: undefined }));
 
     try {
+      const payload: Record<string, unknown> = {
+        department_id: departmentId,
+        year: archiveYear,
+        report_type: selectedType,
+        category,
+        content_text: trimmedContent
+      };
+      if (isDepartmentScope) {
+        payload.scope = 'department';
+      } else {
+        payload.unit_id = effectiveUnitId;
+      }
+
       const response = await fetch('/api/admin/archives/text-content', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${localStorage.getItem('auth_token')}`
         },
-        body: JSON.stringify({
-          department_id: departmentId,
-          year: archiveYear,
-          report_type: selectedType,
-          category,
-          content_text: trimmedContent
-        })
+        body: JSON.stringify(payload)
       });
 
       if (!response.ok) {
@@ -1090,7 +1274,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
   };
 
   const handleParseSave = async (items: any[]) => {
-    if (!selectedReportId) return;
+    if (!selectedReportId || !hasPreviewUnitContext) return;
 
     const response = await fetch('/api/admin/archives/preview', {
       method: 'POST',
@@ -1100,7 +1284,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
       },
       body: JSON.stringify({
         report_id: selectedReportId,
-        unit_id: unitId,
+        unit_id: previewUnitId,
         items
       })
     });
@@ -1304,7 +1488,37 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
                 {deletingYear ? '删除中...' : '删除年份'}
               </button>
             </label>
-            <span className="text-xs text-slate-500">共 {historyYearCount} 个归档年份</span>
+            {!isDepartmentScope && !hasUnitContext ? (
+              <label className="text-sm inline-flex items-center gap-2">
+                <span>入库单位：</span>
+                <select
+                  value={selectedTargetUnitId}
+                  onChange={(event) => {
+                    setSelectedTargetUnitId(event.target.value);
+                    setFocusPreviewBatchId(null);
+                    setPreviewRefreshKey((value) => value + 1);
+                  }}
+                  disabled={unitsLoading || departmentUnits.length === 0}
+                  className="bg-white border border-slate-300 rounded px-2 py-0.5 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-slate-100 disabled:text-slate-400"
+                >
+                  {unitsLoading ? <option value="">加载中...</option> : null}
+                  {!unitsLoading && departmentUnits.length === 0 ? <option value="">暂无下属单位</option> : null}
+                  {!unitsLoading && departmentUnits.length > 0 ? <option value="">请选择入库单位</option> : null}
+                  {!unitsLoading && departmentUnits.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.name || item.code || item.id}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {!isDepartmentScope && !hasUnitContext && unitsError ? <span className="text-xs text-red-500">{unitsError}</span> : null}
+            {!isDepartmentScope && !hasUnitContext && !unitsLoading && !hasTargetUnitContext && departmentUnits.length > 1 ? (
+              <span className="text-xs text-amber-600">请先选择入库单位，再执行“提取数据”。</span>
+            ) : null}
+            <span className="text-xs text-slate-500">
+              共 {archiveYearOptions.length} 个归档年份
+            </span>
           </div>
         </div>
 
@@ -1336,7 +1550,8 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
         </div>
 
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          当前规则：同一部门、同一入库年度、同一报告类型仅保留 1 份文件。再次上传会覆盖旧文件。
+          {`当前规则：同一${isDepartmentScope ? '部门' : '单位'}、同一入库年度、同一报告类型仅保留 1 份文件。再次上传会覆盖该${isDepartmentScope ? '部门' : '单位'}该类型旧文件。`}
+          {!hasArchiveContext ? '（请先选择单位，再查看或上传归档文件。）' : ''}
         </div>
 
         <label className="block">
@@ -1376,11 +1591,14 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
               </div>
               <div className="flex items-center gap-2 shrink-0">
                 <button
-                  className="text-sm bg-white text-slate-600 border px-3 py-1.5 rounded hover:bg-slate-50 flex items-center gap-1"
+                  className="text-sm bg-white text-slate-600 border px-3 py-1.5 rounded hover:bg-slate-50 flex items-center gap-1 disabled:opacity-60 disabled:cursor-not-allowed"
+                  disabled={!hasPreviewUnitContext}
                   onClick={() => {
+                    if (!hasPreviewUnitContext) return;
                     setSelectedReportId(currentReport.id);
                     setParseModalOpen(true);
                   }}
+                  title={!hasPreviewUnitContext ? '缺少可用入库单位，无法创建预览批次' : undefined}
                 >
                   <Download className="w-3 h-3" />
                   提取并预览
@@ -1395,21 +1613,27 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
           )}
         </div>
 
-        <ArchivePreviewPanel
-          unitId={unitId}
-          year={archiveYear}
-          reports={reports}
-          refreshKey={previewRefreshKey}
-          focusBatchId={focusPreviewBatchId}
-          onCommitted={() => {
-            onFactsSaved?.();
-            setPreviewRefreshKey((value) => value + 1);
-          }}
-          onReportDeleted={() => {
-            void loadArchives();
-            setPreviewRefreshKey((value) => value + 1);
-          }}
-        />
+        {hasPreviewUnitContext ? (
+          <ArchivePreviewPanel
+            unitId={String(previewUnitId)}
+            year={archiveYear}
+            reports={reports}
+            refreshKey={previewRefreshKey}
+            focusBatchId={focusPreviewBatchId}
+            onCommitted={() => {
+              onFactsSaved?.();
+              setPreviewRefreshKey((value) => value + 1);
+            }}
+            onReportDeleted={() => {
+              void loadArchives();
+              setPreviewRefreshKey((value) => value + 1);
+            }}
+          />
+        ) : (
+          <div className="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            {isDepartmentScope ? '当前部门下暂无可用入库单位，暂时无法提取并预览。' : '请选择一个入库单位后，再执行“提取并预览”和下方复核入库。'}
+          </div>
+        )}
 
         <div className="border border-slate-200 rounded-xl bg-white p-4 space-y-4 h-fit">
           <div className="flex items-start justify-between gap-3">
@@ -1616,7 +1840,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
                     placeholder="金额（如：3.83万元）"
                   />
                   <textarea
-                    className="w-full px-2.5 py-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-brand-500 min-h-[72px] resize-y"
+                    className="w-full h-[42px] min-h-[42px] px-2.5 py-2 text-sm border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none overflow-y-auto"
                     value={item.purpose}
                     onChange={(event) => handleUpdateFiscalItem(item.id, { purpose: event.target.value })}
                     placeholder="用于理由（如：用于人员经费、公用经费、专项业务支出等）"
@@ -1670,7 +1894,7 @@ const ArchivePanel: React.FC<ArchivePanelProps> = ({
         </div>
       )}
 
-      {selectedReportId && (
+      {hasPreviewUnitContext && selectedReportId && (
         <DataParseModal
           isOpen={parseModalOpen}
           onClose={() => setParseModalOpen(false)}

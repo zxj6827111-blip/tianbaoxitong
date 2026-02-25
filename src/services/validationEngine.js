@@ -48,10 +48,30 @@ const ensureDraftAccess = (draft, user) => {
   if (isAdminLike(user)) {
     return;
   }
-  if (user.unit_id && draft.unit_id && String(user.unit_id) === String(draft.unit_id)) {
+
+  const userUnitId = user.unit_id ? String(user.unit_id) : null;
+  const userDepartmentId = user.department_id ? String(user.department_id) : null;
+  const managedUnitIds = Array.isArray(user.managed_unit_ids)
+    ? user.managed_unit_ids.map((value) => String(value))
+    : [];
+  const draftUnitId = draft.unit_id ? String(draft.unit_id) : null;
+  const draftDepartmentId = draft.department_id ? String(draft.department_id) : null;
+
+  if (userUnitId && draftUnitId && userUnitId === draftUnitId) {
     return;
   }
-  if (user.id && draft.created_by && String(user.id) === String(draft.created_by)) {
+
+  if (draftUnitId && managedUnitIds.includes(draftUnitId)) {
+    return;
+  }
+
+  // Department fallback is only for users without an explicit managed-unit scope.
+  if (!userUnitId && managedUnitIds.length === 0 && userDepartmentId && draftDepartmentId && userDepartmentId === draftDepartmentId) {
+    return;
+  }
+
+  // Legacy fallback: allow creator access only when user has no explicit org scope.
+  if (!userUnitId && !userDepartmentId && user.id && draft.created_by && String(user.id) === String(draft.created_by)) {
     return;
   }
 
@@ -464,7 +484,8 @@ const getDraftOrThrow = async (draftId, user) => {
             d.status,
             d.created_at,
             d.updated_at,
-            u.name AS unit_name
+            u.name AS unit_name,
+            u.department_id AS department_id
      FROM report_draft d
      LEFT JOIN org_unit u ON u.id = d.unit_id
      WHERE d.id = $1`,
