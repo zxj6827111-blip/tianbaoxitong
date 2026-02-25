@@ -46,25 +46,30 @@ class ApiClient {
     return response.data;
   }
 
-  async uploadFile(file: File, year: number, caliber: string = 'unit', unitId?: string) {
+  async uploadFile(file: File, year: number, unitId?: string, departmentId?: string) {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('year', year.toString());
-    formData.append('caliber', caliber);
     if (unitId) {
       formData.append('unit_id', unitId);
+    }
+    if (departmentId) {
+      formData.append('department_id', departmentId);
     }
 
     const response = await this.client.post('/api/uploads', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: 120000
     });
     return response.data;
   }
 
-  async parseUpload(uploadId: number) {
-    const response = await this.client.post(`/api/uploads/${uploadId}/parse`);
+  async parseUpload(uploadId: DraftId) {
+    const response = await this.client.post(`/api/uploads/${uploadId}/parse`, {}, {
+      timeout: 180000
+    });
     return response.data;
   }
 
@@ -75,6 +80,15 @@ class ApiClient {
 
   async listDrafts(params?: { limit?: number; year?: number; unit_id?: string }) {
     const response = await this.client.get('/api/drafts', { params });
+    return response.data;
+  }
+
+  async deleteDraft(draftId: DraftId, payload?: { if_match_updated_at?: string | null }) {
+    const params = payload?.if_match_updated_at
+      ? { if_match_updated_at: payload.if_match_updated_at }
+      : undefined;
+    const response = await this.client.delete(`/api/drafts/${draftId}`, { params });
+    this.invalidateDraftReadCache(draftId);
     return response.data;
   }
 
@@ -272,13 +286,26 @@ class ApiClient {
     window.URL.revokeObjectURL(url);
   }
 
-  async getUnits(params?: { page?: number; pageSize?: number; q?: string; department_id?: string; filter?: string | null; year?: number }) {
+  async getUnits(params?: {
+    page?: number;
+    pageSize?: number;
+    q?: string;
+    department_id?: string;
+    filter?: string | null;
+    year?: number;
+    district?: string;
+  }) {
     const response = await this.client.get('/api/admin/units', { params });
     return response.data;
   }
 
-  async getDepartments(year?: number) {
-    const response = await this.client.get('/api/admin/departments', { params: { year } });
+  async getDepartments(year?: number, district?: string) {
+    const response = await this.client.get('/api/admin/departments', { params: { year, district } });
+    return response.data;
+  }
+
+  async getUploadScopeOptions() {
+    const response = await this.client.get('/api/uploads/scope-options');
     return response.data;
   }
 
@@ -289,6 +316,89 @@ class ApiClient {
 
   async getUnitHistoryByYear(unitId: string, year: number) {
     const response = await this.client.get(`/api/admin/history/units/${unitId}/years/${year}`);
+    return response.data;
+  }
+
+  async downloadOrgTemplate() {
+    const response = await this.client.get('/api/admin/org/template', {
+      responseType: 'blob'
+    });
+    return new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  async downloadOrgExport() {
+    const response = await this.client.get('/api/admin/org/export', {
+      responseType: 'blob'
+    });
+    return new Blob([response.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  }
+
+  async importOrgBatch(file: File) {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await this.client.post('/api/admin/org/batch-import', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return response.data;
+  }
+
+  async uploadPdfBatch(files: File[]) {
+    const formData = new FormData();
+    files.forEach((file) => formData.append('files', file));
+    const response = await this.client.post('/api/admin/pdf-batch/upload', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    });
+    return response.data;
+  }
+
+  async listAdminUsers() {
+    const response = await this.client.get('/api/admin/users');
+    return response.data;
+  }
+
+  async listAdminRoles() {
+    const response = await this.client.get('/api/admin/users/roles');
+    return response.data;
+  }
+
+  async createAdminUser(payload: {
+    email?: string;
+    username?: string;
+    password: string;
+    display_name?: string | null;
+    role?: string;
+    unit_id?: string | null;
+    department_id?: string | null;
+    managed_unit_ids?: string[];
+    can_create_budget?: boolean;
+    can_create_final?: boolean;
+  }) {
+    const response = await this.client.post('/api/admin/users', payload);
+    return response.data;
+  }
+
+  async updateAdminUser(userId: string, payload: {
+    email?: string;
+    username?: string;
+    password?: string;
+    display_name?: string | null;
+    role?: string;
+    unit_id?: string | null;
+    department_id?: string | null;
+    managed_unit_ids?: string[];
+    can_create_budget?: boolean;
+    can_create_final?: boolean;
+  }) {
+    const response = await this.client.put(`/api/admin/users/${userId}`, payload);
+    return response.data;
+  }
+
+  async deleteAdminUser(userId: string) {
+    const response = await this.client.delete(`/api/admin/users/${userId}`);
     return response.data;
   }
 

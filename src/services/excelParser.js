@@ -11,10 +11,162 @@ const normalizeCellText = (value) => {
   return String(value).trim();
 };
 
-const getPrimitiveCellValue = (cell) => {
+const CELL_REF_PATTERN = /^\$?([A-Z]{1,3})\$?(\d+)$/i;
+const SUM_FORMULA_PATTERN = /^SUM\((.+)\)$/i;
+
+const colLettersToNumber = (letters) => {
+  let result = 0;
+  const normalized = String(letters || '').toUpperCase();
+  for (let i = 0; i < normalized.length; i += 1) {
+    result = (result * 26) + (normalized.charCodeAt(i) - 64);
+  }
+  return result;
+};
+
+const colNumberToLetters = (number) => {
+  let n = Number(number);
+  if (!Number.isInteger(n) || n <= 0) {
+    return '';
+  }
+  let result = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    result = String.fromCharCode(65 + rem) + result;
+    n = Math.floor((n - 1) / 26);
+  }
+  return result;
+};
+
+const normalizeCellRef = (token) => {
+  const match = String(token || '').trim().match(CELL_REF_PATTERN);
+  if (!match) {
+    return null;
+  }
+  return `${match[1].toUpperCase()}${Number(match[2])}`;
+};
+
+const toFormulaNumber = (value) => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const text = value.trim().replace(/[,，]/g, '');
+    if (!text) {
+      return null;
+    }
+    const parsed = Number(text);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  return null;
+};
+
+const evaluateFormulaToken = ({ worksheet, token, visited }) => {
+  const normalized = String(token || '').trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const directRef = normalizeCellRef(normalized);
+  if (directRef) {
+    return getPrimitiveCellValue(worksheet.getCell(directRef), visited);
+  }
+
+  if (normalized.includes(':')) {
+    const [startRaw, endRaw] = normalized.split(':');
+    const startRef = normalizeCellRef(startRaw);
+    const endRef = normalizeCellRef(endRaw);
+    if (!startRef || !endRef) {
+      return null;
+    }
+    const startMatch = startRef.match(CELL_REF_PATTERN);
+    const endMatch = endRef.match(CELL_REF_PATTERN);
+    const startCol = colLettersToNumber(startMatch[1]);
+    const endCol = colLettersToNumber(endMatch[1]);
+    const startRow = Number(startMatch[2]);
+    const endRow = Number(endMatch[2]);
+    const colMin = Math.min(startCol, endCol);
+    const colMax = Math.max(startCol, endCol);
+    const rowMin = Math.min(startRow, endRow);
+    const rowMax = Math.max(startRow, endRow);
+
+    let sum = 0;
+    let numericCount = 0;
+    for (let row = rowMin; row <= rowMax; row += 1) {
+      for (let col = colMin; col <= colMax; col += 1) {
+        const ref = `${colNumberToLetters(col)}${row}`;
+        const primitive = getPrimitiveCellValue(worksheet.getCell(ref), visited);
+        const n = toFormulaNumber(primitive);
+        if (n !== null) {
+          sum += n;
+          numericCount += 1;
+        }
+      }
+    }
+    return numericCount > 0 ? sum : null;
+  }
+
+  const numberLiteral = toFormulaNumber(normalized);
+  if (numberLiteral !== null) {
+    return numberLiteral;
+  }
+
+  return null;
+};
+
+const evaluateFormulaValue = ({ cell, formula, visited }) => {
+  const worksheet = cell?.worksheet;
+  if (!worksheet) {
+    return null;
+  }
+  const normalizedFormula = String(formula || '').trim();
+  if (!normalizedFormula) {
+    return null;
+  }
+
+  const sumMatch = normalizedFormula.match(SUM_FORMULA_PATTERN);
+  if (sumMatch) {
+    const tokens = sumMatch[1]
+      .split(/[，,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+    let sum = 0;
+    let numericCount = 0;
+    for (const token of tokens) {
+      const value = evaluateFormulaToken({ worksheet, token, visited });
+      const n = toFormulaNumber(value);
+      if (n !== null) {
+        sum += n;
+        numericCount += 1;
+      }
+    }
+    return numericCount > 0 ? sum : null;
+  }
+
+  if (normalizedFormula.includes('+') && !normalizedFormula.includes('(')) {
+    const tokens = normalizedFormula
+      .split('+')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    let sum = 0;
+    let numericCount = 0;
+    for (const token of tokens) {
+      const value = evaluateFormulaToken({ worksheet, token, visited });
+      const n = toFormulaNumber(value);
+      if (n !== null) {
+        sum += n;
+        numericCount += 1;
+      }
+    }
+    return numericCount > 0 ? sum : null;
+  }
+
+  return evaluateFormulaToken({ worksheet, token: normalizedFormula, visited });
+};
+
+const getPrimitiveCellValue = (cell, visited = new Set()) => {
   const value = cell.value;
   if (value && typeof value === 'object') {
-    if (Object.prototype.hasOwnProperty.call(value, 'result')) {
+    if (Object.prototype.hasOwnProperty.call(value, 'result') && value.result !== undefined && value.result !== null) {
       return value.result;
     }
     if (Object.prototype.hasOwnProperty.call(value, 'richText')) {
@@ -22,6 +174,23 @@ const getPrimitiveCellValue = (cell) => {
     }
     if (Object.prototype.hasOwnProperty.call(value, 'text')) {
       return value.text;
+    }
+    if (Object.prototype.hasOwnProperty.call(value, 'formula')) {
+      const cellKey = `${cell.worksheet?.name || ''}::${cell.address}`;
+      if (visited.has(cellKey)) {
+        return null;
+      }
+      const nextVisited = new Set(visited);
+      nextVisited.add(cellKey);
+      const evaluated = evaluateFormulaValue({
+        cell,
+        formula: value.formula,
+        visited: nextVisited
+      });
+      if (evaluated !== null && evaluated !== undefined) {
+        return evaluated;
+      }
+      return null;
     }
   }
   return value;
@@ -173,6 +342,7 @@ const extractFirstCell = (sheet) => {
 
 const sumFromCols = ({ sheet, row, colHeaders, parsedCellsMap, sheetName }) => {
   let sum = 0;
+  let numericCount = 0;
   const evidenceCells = [];
 
   for (const header of colHeaders) {
@@ -182,15 +352,17 @@ const sumFromCols = ({ sheet, row, colHeaders, parsedCellsMap, sheetName }) => {
     const val = normalizeNumber(getPrimitiveCellValue(targetCell), targetCell.numFmt || '');
     if (val !== null && val !== undefined) {
       sum += val;
+      numericCount += 1;
     }
     evidenceCells.push(collectParsedCell(parsedCellsMap, sheetName, targetCell, `sum_col:${header}`));
   }
 
-  return { sum, evidenceCells };
+  return { sum, evidenceCells, numericCount };
 };
 
 const sumFromRows = ({ sheet, col, rowHeaders, parsedCellsMap, sheetName }) => {
   let sum = 0;
+  let numericCount = 0;
   const evidenceCells = [];
 
   for (const header of rowHeaders) {
@@ -200,11 +372,12 @@ const sumFromRows = ({ sheet, col, rowHeaders, parsedCellsMap, sheetName }) => {
     const val = normalizeNumber(getPrimitiveCellValue(targetCell), targetCell.numFmt || '');
     if (val !== null && val !== undefined) {
       sum += val;
+      numericCount += 1;
     }
     evidenceCells.push(collectParsedCell(parsedCellsMap, sheetName, targetCell, `sum_row:${header}`));
   }
 
-  return { sum, evidenceCells };
+  return { sum, evidenceCells, numericCount };
 };
 
 // --- SheetJS Helper Functions ---
@@ -388,40 +561,52 @@ const parseWithSheetJS = (filePath, mapping) => {
     let normalizedNumber = normalizeNumber(targetCell.value, targetCell.numFmt || '');
     const extraEvidence = [];
 
-    if ((normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumCols)) {
+    if ((rule.forceSumCols || normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumCols)) {
       let sum = 0;
+      let numericCount = 0;
       for (const header of rule.sumCols) {
         const colAnchor = findSheetJSCellByText(sheet, header);
         if (!colAnchor) continue;
         const addr = XLSX.utils.encode_cell({ r: targetRow, c: colAnchor.col - 1 });
         const cell = sheet[addr];
         const cellValue = normalizeNumber(cell ? cell.v : null, cell ? cell.z : '');
-        if (cellValue !== null && cellValue !== undefined) sum += cellValue;
+        if (cellValue !== null && cellValue !== undefined) {
+          sum += cellValue;
+          numericCount += 1;
+        }
         extraEvidence.push(collectParsedCell(parsedCellsMap, sheetName, {
           address: addr,
           value: cell ? cell.v : null,
           numFmt: cell ? cell.z : null
         }, `sum_col:${header}`));
       }
-      normalizedNumber = sum;
+      if (numericCount > 0) {
+        normalizedNumber = sum;
+      }
     }
 
-    if ((normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumRows)) {
+    if ((rule.forceSumRows || normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumRows)) {
       let sum = 0;
+      let numericCount = 0;
       for (const header of rule.sumRows) {
         const rowAnchor = findSheetJSCellByText(sheet, header);
         if (!rowAnchor) continue;
         const addr = XLSX.utils.encode_cell({ r: rowAnchor.row - 1, c: colAnchorCell.col - 1 });
         const cell = sheet[addr];
         const cellValue = normalizeNumber(cell ? cell.v : null, cell ? cell.z : '');
-        if (cellValue !== null && cellValue !== undefined) sum += cellValue;
+        if (cellValue !== null && cellValue !== undefined) {
+          sum += cellValue;
+          numericCount += 1;
+        }
         extraEvidence.push(collectParsedCell(parsedCellsMap, sheetName, {
           address: addr,
           value: cell ? cell.v : null,
           numFmt: cell ? cell.z : null
         }, `sum_row:${header}`));
       }
-      normalizedNumber = sum;
+      if (numericCount > 0) {
+        normalizedNumber = sum;
+      }
     }
 
     if (normalizedNumber === null) {
@@ -809,27 +994,31 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
       let normalizedNumber = normalizeNumber(getPrimitiveCellValue(targetCell), targetCell.numFmt || '');
       const extraEvidence = [];
 
-      if ((normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumCols)) {
-        const { sum, evidenceCells } = sumFromCols({
+      if ((rule.forceSumCols || normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumCols)) {
+        const { sum, evidenceCells, numericCount } = sumFromCols({
           sheet,
           row: targetRow,
           colHeaders: rule.sumCols,
           parsedCellsMap,
           sheetName: sheet.name
         });
-        normalizedNumber = sum;
+        if (numericCount > 0) {
+          normalizedNumber = sum;
+        }
         extraEvidence.push(...evidenceCells);
       }
 
-      if ((normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumRows)) {
-        const { sum, evidenceCells } = sumFromRows({
+      if ((rule.forceSumRows || normalizedNumber === null || normalizedNumber === 0) && Array.isArray(rule.sumRows)) {
+        const { sum, evidenceCells, numericCount } = sumFromRows({
           sheet,
           col: colAnchorCell.col,
           rowHeaders: rule.sumRows,
           parsedCellsMap,
           sheetName: sheet.name
         });
-        normalizedNumber = sum;
+        if (numericCount > 0) {
+          normalizedNumber = sum;
+        }
         extraEvidence.push(...evidenceCells);
       }
 
@@ -864,11 +1053,9 @@ const parseBudgetWorkbook = async (filePath, mapping = BUDGET_MAPPING) => {
     };
   } catch (error) {
     if (error.message && error.message.includes('Cannot merge already merged cells')) {
-      throw new AppError({
-        statusCode: 422,
-        code: 'UNSUPPORTED_WORKBOOK_LAYOUT',
-        message: 'Workbook contains unsupported merged-cell layout'
-      });
+      // Some upstream workbooks contain overlapping merge definitions.
+      // ExcelJS rejects them, while SheetJS can still read required tables.
+      return parseWithSheetJS(filePath, mapping);
     }
     throw error;
   }

@@ -4,7 +4,7 @@ const path = require('node:path');
 const XLSX = require('xlsx');
 const db = require('../db');
 const { AppError } = require('../errors');
-const { requireAuth } = require('../middleware/auth');
+const { requireAuth, requireScope, isAdminLike } = require('../middleware/auth');
 const { HISTORY_ACTUAL_KEYS } = require('../services/historyActualsConfig');
 const {
   LINE_ITEM_KEY_SET,
@@ -547,11 +547,6 @@ const loadDraftBudgetTables = async (draft) => {
   return payload;
 };
 
-const isAdminLike = (user) => {
-  const roles = user?.roles || [];
-  return roles.includes('admin') || roles.includes('maintainer');
-};
-
 const parseIfMatchUpdatedAt = (value) => {
   if (value === undefined || value === null || value === '') {
     return null;
@@ -746,7 +741,7 @@ const getReceipt = async (draftId) => {
 
 const getDraftWithAccess = async (draftId, user) => getDraftOrThrow(draftId, user);
 
-router.get('/', requireAuth, async (req, res, next) => {
+router.get('/', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
     const year = req.query.year ? Number(req.query.year) : null;
@@ -755,14 +750,42 @@ router.get('/', requireAuth, async (req, res, next) => {
     const where = [];
     const params = [];
 
-    if (isAdminLike(req.user)) {
+    if (req.scopeMeta?.isAdminLike) {
       if (unitId) {
         params.push(unitId);
         where.push(`d.unit_id = $${params.length}`);
       }
-    } else if (req.user?.unit_id) {
-      params.push(req.user.unit_id);
+    } else if (Array.isArray(req.scopeFilter?.unit_ids) && req.scopeFilter.unit_ids.length > 0) {
+      if (unitId && !req.scopeFilter.unit_ids.some((candidate) => String(candidate) === String(unitId))) {
+        throw new AppError({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          message: 'No permission to query this unit drafts'
+        });
+      }
+      params.push(req.scopeFilter.unit_ids);
+      where.push(`d.unit_id = ANY($${params.length}::uuid[])`);
+      if (unitId) {
+        params.push(unitId);
+        where.push(`d.unit_id = $${params.length}`);
+      }
+    } else if (req.scopeFilter?.unit_id) {
+      if (unitId && String(unitId) !== String(req.scopeFilter.unit_id)) {
+        throw new AppError({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          message: 'No permission to query this unit drafts'
+        });
+      }
+      params.push(req.scopeFilter.unit_id);
       where.push(`d.unit_id = $${params.length}`);
+    } else if (req.scopeFilter?.department_id) {
+      params.push(req.scopeFilter.department_id);
+      where.push(`u.department_id = $${params.length}`);
+      if (unitId) {
+        params.push(unitId);
+        where.push(`d.unit_id = $${params.length}`);
+      }
     } else {
       params.push(req.user.id);
       where.push(`d.created_by = $${params.length}`);
@@ -806,7 +829,7 @@ router.get('/', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id', requireAuth, async (req, res, next) => {
+router.get('/:id', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
 
@@ -858,7 +881,103 @@ router.get('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/receipt', requireAuth, async (req, res, next) => {
+router.delete('/:id', requireAuth, requireScope(), async (req, res, next) => {
+  const client = await db.getClient();
+  let uploadFilePathToDelete = null;
+  let transactionStarted = false;
+
+  try {
+    const draft = await getDraftWithAccess(req.params.id, req.user);
+    const ifMatchUpdatedAt = parseIfMatchUpdatedAt(req.query?.if_match_updated_at);
+    const deletableStatuses = new Set([DRAFT_STATUS.DRAFT, DRAFT_STATUS.VALIDATED]);
+
+    if (!deletableStatuses.has(draft.status)) {
+      throw new AppError({
+        statusCode: 409,
+        code: 'DRAFT_DELETE_FORBIDDEN',
+        message: `Draft in status ${draft.status} cannot be deleted`
+      });
+    }
+
+    await client.query('BEGIN');
+    transactionStarted = true;
+
+    const params = [draft.id];
+    let where = 'id = $1';
+    if (ifMatchUpdatedAt) {
+      params.push(ifMatchUpdatedAt);
+      where += ` AND date_trunc('milliseconds', updated_at) = date_trunc('milliseconds', $${params.length}::timestamptz)`;
+    }
+
+    const deleteDraftResult = await client.query(
+      `DELETE FROM report_draft
+       WHERE ${where}
+       RETURNING id, upload_id`,
+      params
+    );
+
+    if (deleteDraftResult.rowCount === 0) {
+      await throwStaleOrNotFound(client, draft.id);
+    }
+
+    const deletedDraft = deleteDraftResult.rows[0];
+    let removedUpload = false;
+
+    if (deletedDraft.upload_id) {
+      const uploadResult = await client.query(
+        `SELECT id, file_name
+         FROM upload_job
+         WHERE id = $1`,
+        [deletedDraft.upload_id]
+      );
+
+      if (uploadResult.rowCount > 0) {
+        const upload = uploadResult.rows[0];
+        if (upload.file_name) {
+          uploadFilePathToDelete = getUploadFilePath(upload.id, upload.file_name);
+        }
+        await client.query('DELETE FROM upload_job WHERE id = $1', [upload.id]);
+        removedUpload = true;
+      }
+    }
+
+    await appendAuditLog({
+      client,
+      req,
+      userId: req.user.id,
+      action: 'DRAFT_DELETED',
+      entityId: draft.id,
+      meta: {
+        deleted_status: draft.status,
+        removed_upload: removedUpload
+      }
+    });
+
+    await client.query('COMMIT');
+    transactionStarted = false;
+
+    if (uploadFilePathToDelete) {
+      fs.unlink(uploadFilePathToDelete).catch(() => {
+        // Ignore stale file cleanup failures after DB commit.
+      });
+    }
+
+    return res.json({
+      draft_id: draft.id,
+      deleted: true,
+      removed_upload: removedUpload
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await client.query('ROLLBACK');
+    }
+    return next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.get('/:id/receipt', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const receipt = await getReceipt(draft.id);
@@ -868,7 +987,7 @@ router.get('/:id/receipt', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/copy-sources', requireAuth, async (req, res, next) => {
+router.get('/:id/copy-sources', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const sources = await getCopySourceDrafts({
@@ -887,7 +1006,7 @@ router.get('/:id/copy-sources', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/diff-summary', requireAuth, async (req, res, next) => {
+router.get('/:id/diff-summary', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const prevYear = Number(draft.year) - 1;
@@ -961,7 +1080,7 @@ router.get('/:id/diff-summary', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/budget-tables', requireAuth, async (req, res, next) => {
+router.get('/:id/budget-tables', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const payload = await loadDraftBudgetTables(draft);
@@ -984,7 +1103,7 @@ router.get('/:id/budget-tables', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/budget-tables/:tableKey', requireAuth, async (req, res, next) => {
+router.get('/:id/budget-tables/:tableKey', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const tableKey = String(req.params.tableKey || '');
@@ -1017,7 +1136,7 @@ router.get('/:id/budget-tables/:tableKey', requireAuth, async (req, res, next) =
   }
 });
 
-router.get('/:id/budget-tables-diagnose', requireAuth, async (req, res, next) => {
+router.get('/:id/budget-tables-diagnose', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const payload = await loadDraftBudgetTables(draft);
@@ -1067,7 +1186,7 @@ router.get('/:id/budget-tables-diagnose', requireAuth, async (req, res, next) =>
   }
 });
 
-router.get('/:id/other-related-auto', requireAuth, async (req, res, next) => {
+router.get('/:id/other-related-auto', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const payload = await loadDraftBudgetTables(draft);
@@ -1211,7 +1330,7 @@ router.get('/:id/other-related-auto', requireAuth, async (req, res, next) => {
   }
 });
 
-router.patch('/:id/manual-inputs', requireAuth, async (req, res, next) => {
+router.patch('/:id/manual-inputs', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -1303,7 +1422,7 @@ router.patch('/:id/manual-inputs', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/history-text', requireAuth, async (req, res, next) => {
+router.get('/:id/history-text', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const key = req.query.key;
@@ -1340,8 +1459,12 @@ router.get('/:id/history-text', requireAuth, async (req, res, next) => {
     const textResult = await db.query(
       `SELECT content_text
        FROM org_dept_text_content
-       WHERE department_id = $1 AND year = $2 AND report_type = 'BUDGET' AND category = $3`,
-      [departmentId, prevYear, category]
+       WHERE department_id = $1
+         AND year = $2
+         AND report_type = 'BUDGET'
+         AND category = $3
+         AND unit_id = $4`,
+      [departmentId, prevYear, category, draft.unit_id]
     );
 
     let contentTextRaw = textResult.rows[0]?.content_text || null;
@@ -1356,6 +1479,7 @@ router.get('/:id/history-text', requireAuth, async (req, res, next) => {
            AND year = $2
            AND report_type = 'BUDGET'
            AND category = ANY($3)
+           AND unit_id = $4
          ORDER BY
            CASE category
              WHEN 'EXPLANATION_CHANGE_REASON' THEN 0
@@ -1363,7 +1487,7 @@ router.get('/:id/history-text', requireAuth, async (req, res, next) => {
              WHEN 'EXPLANATION_OVERVIEW' THEN 2
              ELSE 3
            END`,
-        [departmentId, prevYear, ['EXPLANATION_CHANGE_REASON', 'EXPLANATION', 'EXPLANATION_OVERVIEW']]
+        [departmentId, prevYear, ['EXPLANATION_CHANGE_REASON', 'EXPLANATION', 'EXPLANATION_OVERVIEW'], draft.unit_id]
       );
 
       for (const row of fallbackResult.rows) {
@@ -1385,7 +1509,7 @@ router.get('/:id/history-text', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/copy-previous', requireAuth, async (req, res, next) => {
+router.post('/:id/copy-previous', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -1493,7 +1617,7 @@ router.post('/:id/copy-previous', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/validate', requireAuth, async (req, res, next) => {
+router.post('/:id/validate', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -1537,7 +1661,7 @@ router.post('/:id/validate', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/submit', requireAuth, async (req, res, next) => {
+router.post('/:id/submit', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -1601,7 +1725,7 @@ router.post('/:id/submit', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/suggestions', requireAuth, async (req, res, next) => {
+router.post('/:id/suggestions', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const key = req.body?.key;
@@ -1676,7 +1800,7 @@ router.post('/:id/suggestions', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/suggestions', requireAuth, async (req, res, next) => {
+router.get('/:id/suggestions', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const suggestions = await listDraftSuggestions(draft.id);
@@ -1686,7 +1810,7 @@ router.get('/:id/suggestions', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/line-items', requireAuth, async (req, res, next) => {
+router.get('/:id/line-items', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const threshold = await fetchReasonThreshold();
@@ -1709,7 +1833,7 @@ router.get('/:id/line-items', requireAuth, async (req, res, next) => {
   }
 });
 
-router.patch('/:id/line-items', requireAuth, async (req, res, next) => {
+router.patch('/:id/line-items', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -1824,7 +1948,7 @@ router.patch('/:id/line-items', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/issues', requireAuth, async (req, res, next) => {
+router.get('/:id/issues', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const level = req.query.level || null;
@@ -1839,7 +1963,7 @@ router.get('/:id/issues', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/preview', requireAuth, async (req, res, next) => {
+router.post('/:id/preview', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -1893,7 +2017,7 @@ router.post('/:id/preview', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/preview/pdf', requireAuth, async (req, res, next) => {
+router.get('/:id/preview/pdf', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const previewPdfPath = getPreviewPdfPath({
@@ -1906,7 +2030,7 @@ router.get('/:id/preview/pdf', requireAuth, async (req, res, next) => {
   }
 });
 
-router.get('/:id/preview/excel', requireAuth, async (req, res, next) => {
+router.get('/:id/preview/excel', requireAuth, requireScope(), async (req, res, next) => {
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
     const previewExcelPath = getPreviewExcelPath({
@@ -1924,7 +2048,7 @@ router.get('/:id/preview/excel', requireAuth, async (req, res, next) => {
   }
 });
 
-router.post('/:id/generate', requireAuth, async (req, res, next) => {
+router.post('/:id/generate', requireAuth, requireScope(), async (req, res, next) => {
   const client = await db.getClient();
   try {
     const draft = await getDraftWithAccess(req.params.id, req.user);
@@ -2006,3 +2130,4 @@ router.post('/:id/generate', requireAuth, async (req, res, next) => {
 });
 
 module.exports = router;
+

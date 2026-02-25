@@ -45,6 +45,14 @@ const parseOptionalYear = (value) => {
   return parsed;
 };
 
+const parseOptionalDistrict = (value) => {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  const normalized = String(value).trim();
+  return normalized || null;
+};
+
 const parsePositiveInt = (value, field, defaultValue) => {
   if (value === undefined || value === null || value === '') {
     return defaultValue;
@@ -80,8 +88,29 @@ const parseFilter = (value) => {
 router.get('/departments', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const year = parseOptionalYear(req.query.year);
+    const district = parseOptionalDistrict(req.query.district);
+    const departments = await getDepartmentTreeWithCounts({ year, district });
+    return res.json({ year, district, departments });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.get('/departments/:deptId', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
+  try {
+    const year = parseOptionalYear(req.query.year);
     const departments = await getDepartmentTreeWithCounts({ year });
-    return res.json({ year, departments });
+    const department = departments.find((item) => String(item.id) === String(req.params.deptId)) || null;
+
+    if (!department) {
+      throw new AppError({
+        statusCode: 404,
+        code: 'NOT_FOUND',
+        message: 'Department not found'
+      });
+    }
+
+    return res.json({ year, department });
   } catch (error) {
     return next(error);
   }
@@ -90,12 +119,14 @@ router.get('/departments', requireAuth, requireRole(['admin', 'maintainer']), as
 router.get('/units', requireAuth, requireRole(['admin', 'maintainer']), async (req, res, next) => {
   try {
     const year = parseOptionalYear(req.query.year);
+    const district = parseOptionalDistrict(req.query.district);
     const page = parsePositiveInt(req.query.page, 'page', 1);
     const pageSize = parsePositiveInt(req.query.pageSize, 'pageSize', 20);
     const filter = parseFilter(req.query.filter);
 
     const result = await listUnits({
       year,
+      district,
       page,
       pageSize,
       departmentId: req.query.department_id,
@@ -107,6 +138,7 @@ router.get('/units', requireAuth, requireRole(['admin', 'maintainer']), async (r
       page,
       pageSize,
       total: result.total,
+      district,
       units: result.items
     });
   } catch (error) {

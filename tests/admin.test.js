@@ -1,6 +1,7 @@
-process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
+﻿process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-secret';
 
 const request = require('supertest');
+const ExcelJS = require('exceljs');
 const app = require('../src/app');
 const db = require('../src/db');
 const { migrateUp } = require('./helpers/migrations');
@@ -43,6 +44,30 @@ const login = async () => {
     .post('/api/auth/login')
     .send({ email: 'admin@example.com', password: 'secret' });
 
+  return response.body.token;
+};
+
+const seedUserWithRole = async ({ email, roleName, unitId, departmentId }) => {
+  const passwordHash = await hashPassword('secret');
+  const user = await db.query(
+    `INSERT INTO users (email, password_hash, display_name, unit_id, department_id)
+     VALUES ($1, $2, $3, $4, $5)
+     RETURNING id`,
+    [email, passwordHash, email, unitId || null, departmentId || null]
+  );
+  const role = await db.query('SELECT id FROM roles WHERE name = $1', [roleName]);
+  await db.query(
+    `INSERT INTO user_roles (user_id, role_id)
+     VALUES ($1, $2)`,
+    [user.rows[0].id, role.rows[0].id]
+  );
+  return user.rows[0].id;
+};
+
+const loginAs = async (email) => {
+  const response = await request(app)
+    .post('/api/auth/login')
+    .send({ email, password: 'secret' });
   return response.body.token;
 };
 
@@ -241,4 +266,156 @@ describe('admin management endpoints', () => {
     expect(response.status).toBe(400);
     expect(response.body.code).toBe('VALIDATION_ERROR');
   });
+
+  it('downloads org import template as xlsx', async () => {
+    await seedAdminUser();
+    const token = await login();
+
+    const response = await request(app)
+      .get('/api/admin/org/template')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const payloadSize = Buffer.isBuffer(response.body)
+      ? response.body.length
+      : Buffer.byteLength(String(response.text || ''), 'utf8');
+    expect(payloadSize).toBeGreaterThan(100);
+  });
+
+  it('imports simplified org batch template', async () => {
+    await seedAdminUser();
+    const token = await login();
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('Sheet1');
+    worksheet.addRow(['部门名称', '单位名称', '备注']);
+    worksheet.addRow(['测试部门A', '测试单位A1', '']);
+    worksheet.addRow(['测试部门A', '测试单位A2', '']);
+    worksheet.addRow(['测试部门B', '', '仅创建部门']);
+    const buffer = await workbook.xlsx.writeBuffer();
+
+    const response = await request(app)
+      .post('/api/admin/org/batch-import')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', Buffer.from(buffer), 'org-import.xlsx');
+
+    expect(response.status).toBe(200);
+    expect(response.body.success).toBe(true);
+    expect(response.body.format).toBe('simplified');
+    expect(response.body.imported.departments).toBe(2);
+    expect(response.body.imported.units).toBe(2);
+
+    const departmentCount = await db.query(`SELECT COUNT(*) AS count FROM org_department WHERE name LIKE '测试部门%'`);
+    const unitCount = await db.query(`SELECT COUNT(*) AS count FROM org_unit WHERE name LIKE '测试单位%'`);
+    expect(Number(departmentCount.rows[0].count)).toBe(2);
+    expect(Number(unitCount.rows[0].count)).toBe(2);
+  });
+
+  it('supports admin user CRUD endpoints', async () => {
+    await seedAdminUser();
+    const token = await login();
+
+    const dept = await db.query(
+      `INSERT INTO org_department (code, name)
+       VALUES ($1, $2)
+       RETURNING id`,
+      ['D_USER_01', '鐢ㄦ埛娴嬭瘯閮ㄩ棬']
+    );
+    const unit = await db.query(
+      `INSERT INTO org_unit (department_id, code, name)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [dept.rows[0].id, 'U_USER_01', '鐢ㄦ埛娴嬭瘯鍗曚綅']
+    );
+
+    const createResponse = await request(app)
+      .post('/api/admin/users')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        email: 'new-user@example.com',
+        password: 'secret123',
+        display_name: 'new-user',
+        role: 'reporter',
+        unit_id: unit.rows[0].id,
+        managed_unit_ids: [unit.rows[0].id],
+        can_create_budget: true,
+        can_create_final: false
+      });
+
+    expect(createResponse.status).toBe(201);
+    expect(createResponse.body.user).toEqual(expect.objectContaining({
+      email: 'new-user@example.com',
+      role: 'reporter',
+      unit_id: unit.rows[0].id,
+      managed_unit_ids: [unit.rows[0].id],
+      can_create_budget: true,
+      can_create_final: false
+    }));
+
+    const userId = createResponse.body.user.id;
+
+    const updateResponse = await request(app)
+      .put(`/api/admin/users/${userId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        display_name: 'new-user-updated',
+        role: 'viewer',
+        unit_id: unit.rows[0].id,
+        managed_unit_ids: [unit.rows[0].id],
+        can_create_budget: false,
+        can_create_final: false
+      });
+
+    expect(updateResponse.status).toBe(200);
+    expect(updateResponse.body.user.role).toBe('viewer');
+    expect(updateResponse.body.user.can_create_budget).toBe(false);
+    expect(updateResponse.body.user.can_create_final).toBe(false);
+
+    const listResponse = await request(app)
+      .get('/api/admin/users')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(listResponse.status).toBe(200);
+    expect(listResponse.body.users.some((user) => user.id === userId)).toBe(true);
+
+    const deleteResponse = await request(app)
+      .delete(`/api/admin/users/${userId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.success).toBe(true);
+  });
+
+  it('forbids reporter from accessing admin user management endpoint', async () => {
+    await seedAdminUser();
+
+    const dept = await db.query(
+      `INSERT INTO org_department (code, name)
+       VALUES ($1, $2)
+       RETURNING id`,
+      ['D_RP_01', 'Reporter 閮ㄩ棬']
+    );
+    const unit = await db.query(
+      `INSERT INTO org_unit (department_id, code, name)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [dept.rows[0].id, 'U_RP_01', 'Reporter 鍗曚綅']
+    );
+    await seedUserWithRole({
+      email: 'reporter-no-access@example.com',
+      roleName: 'reporter',
+      unitId: unit.rows[0].id,
+      departmentId: dept.rows[0].id
+    });
+
+    const reporterToken = await loginAs('reporter-no-access@example.com');
+    const response = await request(app)
+      .get('/api/admin/users')
+      .set('Authorization', `Bearer ${reporterToken}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe('FORBIDDEN');
+  });
 });
+

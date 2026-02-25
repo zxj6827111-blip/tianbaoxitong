@@ -133,4 +133,49 @@ describe('historyFactAutoExtractor', () => {
     expect(facts.three_public_vehicle_total).toBe(0);
     expect(facts.operation_fund).toBe(213.28);
   });
+
+  it('fills three-public empty table as zeros when empty-note is present', () => {
+    const threeRows = [
+      ['\u201c\u4e09\u516c\u201d\u7ecf\u8d39\u9884\u7b97\u6570', '\u673a\u5173\u8fd0\u884c\u7ecf\u8d39\u9884\u7b97\u6570'],
+      ['\u5408\u8ba1', '\u56e0\u516c\u51fa\u56fd(\u5883)\u8d39', '\u516c\u52a1\u63a5\u5f85\u8d39', '\u516c\u52a1\u7528\u8f66\u8d2d\u7f6e\u53ca\u8fd0\u884c\u8d39', '\u5c0f\u8ba1', '\u8d2d\u7f6e\u8d39', '\u8fd0\u884c\u8d39'],
+      ['', '', '', '', '', '', ''],
+      ['\u6ce8:\u672c\u5355\u4f4d2025\u5e74\u65e0\u201c\u4e09\u516c\u201d\u7ecf\u8d39\u548c\u673a\u5173\u8fd0\u884c\u7ecf\u8d39\u9884\u7b97\uff0c\u6545\u672c\u8868\u4e3a\u7a7a\u8868\u3002']
+    ];
+
+    const facts = extractHistoryFactsFromTableData([
+      { table_key: 'three_public', data_json: threeRows }
+    ]);
+
+    expect(facts.three_public_total).toBe(0);
+    expect(facts.three_public_outbound).toBe(0);
+    expect(facts.three_public_reception).toBe(0);
+    expect(facts.three_public_vehicle_total).toBe(0);
+    expect(facts.three_public_vehicle_purchase).toBe(0);
+    expect(facts.three_public_vehicle_operation).toBe(0);
+    expect(facts.operation_fund).toBe(0);
+  });
+
+  it('fills three-public empty table as zeros when only headers exist', () => {
+    const threeRows = [
+      ['\u7f16\u5236\u5355\u4f4d\uff1a\u4e0a\u6d77\u5e02\u666e\u9640\u533a\u4e07\u91cc\u8857\u9053\u7ecf\u6d4e\u53d1\u5c55\u670d\u52a1\u4e2d\u5fc3', '\u5355\u4f4d:\u4e07\u5143', '', '', '', '', ''],
+      ['\u201c\u4e09\u516c\u201d\u7ecf\u8d39\u9884\u7b97\u6570', '', '', '', '', '', ''],
+      ['\u673a\u5173\u8fd0\u884c\u7ecf\u8d39\u9884\u7b97', '', '', '', '', '', ''],
+      ['\u6570', '', '', '', '', '', ''],
+      ['\u5408\u8ba1', '\u56e0\u516c\u51fa\u56fd(\u5883)\u8d39', '\u516c\u52a1\u63a5\u5f85\u8d39', '', '', '', ''],
+      ['\u516c\u52a1\u7528\u8f66\u8d2d\u7f6e\u53ca\u8fd0\u884c\u8d39', '', '', '', '', '', ''],
+      ['\u5c0f\u8ba1', '\u8d2d\u7f6e\u8d39', '\u8fd0\u884c\u8d39', '', '', '', '']
+    ];
+
+    const facts = extractHistoryFactsFromTableData([
+      { table_key: 'three_public', data_json: threeRows }
+    ]);
+
+    expect(facts.three_public_total).toBe(0);
+    expect(facts.three_public_outbound).toBe(0);
+    expect(facts.three_public_reception).toBe(0);
+    expect(facts.three_public_vehicle_total).toBe(0);
+    expect(facts.three_public_vehicle_purchase).toBe(0);
+    expect(facts.three_public_vehicle_operation).toBe(0);
+    expect(facts.operation_fund).toBe(0);
+  });
 });

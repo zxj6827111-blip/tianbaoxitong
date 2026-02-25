@@ -7,6 +7,7 @@ const LoginPage = React.lazy(() => import('./pages/LoginPage').then((module) => 
 const WorkbenchPage = React.lazy(() => import('./pages/WorkbenchPage').then((module) => ({ default: module.WorkbenchPage })));
 const AdminPage = React.lazy(() => import('./pages/AdminPage'));
 const AdminUnitDetailPage = React.lazy(() => import('./pages/AdminUnitDetailPage'));
+const AdminDepartmentDetailPage = React.lazy(() => import('./pages/AdminDepartmentDetailPage'));
 const DemoPage = React.lazy(() => import('./pages/DemoPage'));
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -55,6 +56,14 @@ const AppRoutes: React.FC = () => {
           element={
             <ProtectedRoute>
               <AdminUnitDetailPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/admin/department/:departmentId"
+          element={
+            <ProtectedRoute>
+              <AdminDepartmentDetailPage />
             </ProtectedRoute>
           }
         />

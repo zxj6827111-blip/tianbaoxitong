@@ -5,6 +5,7 @@ import {
   ChevronDown,
   Building2,
   Folder,
+  Search,
   MoreHorizontal,
   Edit2,
   Trash2,
@@ -34,6 +35,9 @@ const DISTRICTS = [
 
 type DepartmentTreeNode = DepartmentNode & { children: DepartmentTreeNode[] };
 
+const normalizeSearchValue = (value: string | null | undefined) =>
+  String(value || '').trim().toLowerCase();
+
 const buildTree = (departments: DepartmentNode[]): DepartmentTreeNode[] => {
   const map = new Map<string, DepartmentTreeNode>();
   const nodes = departments.map((dept) => ({ ...dept, children: [] }));
@@ -55,6 +59,34 @@ const buildTree = (departments: DepartmentNode[]): DepartmentTreeNode[] => {
   return roots;
 };
 
+const filterTreeByKeyword = (nodes: DepartmentTreeNode[], keyword: string): DepartmentTreeNode[] => {
+  const normalizedKeyword = normalizeSearchValue(keyword);
+  if (!normalizedKeyword) return nodes;
+
+  const walk = (node: DepartmentTreeNode): DepartmentTreeNode | null => {
+    const children = node.children
+      .map(walk)
+      .filter((child): child is DepartmentTreeNode => child !== null);
+    const selfMatched =
+      normalizeSearchValue(node.name).includes(normalizedKeyword) ||
+      normalizeSearchValue(node.code).includes(normalizedKeyword);
+
+    if (!selfMatched && children.length === 0) {
+      return null;
+    }
+
+    return { ...node, children };
+  };
+
+  return nodes
+    .map(walk)
+    .filter((node): node is DepartmentTreeNode => node !== null);
+};
+
+const countTreeNodes = (nodes: DepartmentTreeNode[]): number => (
+  nodes.reduce((acc, node) => acc + 1 + countTreeNodes(node.children), 0)
+);
+
 const DepartmentTree: React.FC<DepartmentTreeProps> = ({
   departments,
   selectedId,
@@ -69,6 +101,17 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
   const tree = useMemo(() => buildTree(departments), [departments]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const normalizedKeyword = normalizeSearchValue(searchKeyword);
+
+  const filteredTree = useMemo(
+    () => filterTreeByKeyword(tree, normalizedKeyword),
+    [tree, normalizedKeyword]
+  );
+  const matchedDepartmentCount = useMemo(
+    () => countTreeNodes(filteredTree),
+    [filteredTree]
+  );
 
   const summary = useMemo(() => {
     return departments.reduce(
@@ -164,7 +207,8 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
   };
 
   const renderNode = (node: DepartmentTreeNode, depth = 0) => {
-    const isCollapsed = collapsed[node.id];
+    const isSearching = Boolean(normalizedKeyword);
+    const isCollapsed = isSearching ? false : collapsed[node.id];
     const hasChildren = node.children.length > 0;
     const isSelected = selectedId === node.id;
 
@@ -172,7 +216,7 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
       <li key={node.id}>
         <div
           className={`
-            group relative flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all duration-200 border border-transparent
+            group relative flex items-start justify-between p-2 rounded-lg cursor-pointer transition-all duration-200 border border-transparent
             ${isSelected ? 'bg-brand-50 border-brand-200 text-brand-900' : 'hover:bg-slate-50 text-slate-700'}
           `}
           style={{ marginLeft: depth * 16 }}
@@ -180,11 +224,12 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
           role="button"
           tabIndex={0}
         >
-          <div className="flex-1 flex items-center gap-1.5 overflow-hidden pr-2">
+          <div className="flex-1 flex items-start gap-1.5 min-w-0 pr-10">
             <button
-              className={`p-1 rounded hover:bg-black/5 text-slate-400 transition-colors ${hasChildren ? 'visible' : 'invisible'}`}
+              className={`mt-0.5 p-1 rounded hover:bg-black/5 text-slate-400 transition-colors ${hasChildren ? 'visible' : 'invisible'}`}
               onClick={(event) => {
                 event.stopPropagation();
+                if (isSearching) return;
                 toggleCollapsed(node.id);
               }}
             >
@@ -194,7 +239,7 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
             <Folder className={`w-4 h-4 shrink-0 ${isSelected ? 'text-brand-500' : 'text-slate-400'}`} />
 
             <div className="min-w-0 flex-1">
-              <div className="font-medium text-sm truncate" title={node.name}>{node.name}</div>
+              <div className="font-medium text-sm leading-5 whitespace-normal break-words" title={node.name}>{node.name}</div>
             </div>
           </div>
 
@@ -234,6 +279,24 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
           </select>
         </div>
       )}
+
+      <div className="px-2 pb-1">
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <input
+            type="text"
+            className="w-full pl-8 pr-3 py-1.5 text-sm border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500 text-slate-700 bg-white"
+            placeholder="搜索部门名称/编码"
+            value={searchKeyword}
+            onChange={(event) => setSearchKeyword(event.target.value)}
+          />
+        </div>
+        {normalizedKeyword ? (
+          <div className="mt-1 text-xs text-slate-500 px-1">
+            匹配到 {matchedDepartmentCount} 个部门
+          </div>
+        ) : null}
+      </div>
 
       <ul className="space-y-0.5 p-2 pb-20 flex-1 overflow-y-auto">
         <li>
@@ -278,7 +341,13 @@ const DepartmentTree: React.FC<DepartmentTreeProps> = ({
           </div>
         </li>
 
-        {tree.map((node) => renderNode(node))}
+        {filteredTree.length === 0 && normalizedKeyword ? (
+          <li className="px-2 py-5 text-xs text-center text-slate-500">
+            未找到匹配部门，请尝试更换关键词
+          </li>
+        ) : (
+          filteredTree.map((node) => renderNode(node))
+        )}
       </ul>
     </div>
   );

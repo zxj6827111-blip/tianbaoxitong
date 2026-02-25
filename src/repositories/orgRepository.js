@@ -1,7 +1,8 @@
 const db = require('../db');
 
-const getDepartmentTreeWithCounts = async ({ year } = {}) => {
-  const params = [year ?? null];
+const getDepartmentTreeWithCounts = async ({ year, district } = {}) => {
+  const districtPattern = district ? `%${district}%` : null;
+  const params = [year ?? null, districtPattern];
   const result = await db.query(
     `
       WITH unit_status AS (
@@ -16,7 +17,7 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
                  COUNT(*) AS archive_count,
                  BOOL_OR(is_locked) AS has_locked
           FROM history_actuals
-          WHERE ($1::int IS NULL OR year = $1)
+          WHERE ($1::int IS NULL OR year = ($1::int - 1))
           GROUP BY unit_id
         ) ha ON ha.unit_id = u.id
         LEFT JOIN (
@@ -28,12 +29,27 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
           GROUP BY unit_id
         ) pending ON pending.unit_id = u.id
         LEFT JOIN (
-          SELECT scope_id AS unit_id
-          FROM base_info_version
-          WHERE scope_type = 'unit'
-            AND is_active = true
-            AND ($1::int IS NULL OR year = $1)
-          GROUP BY scope_id
+          SELECT unit_id
+          FROM (
+            SELECT scope_id AS unit_id
+            FROM base_info_version
+            WHERE scope_type = 'unit'
+              AND is_active = true
+              AND ($1::int IS NULL OR year <= $1)
+            GROUP BY scope_id
+
+            UNION
+
+            SELECT unit_id
+            FROM org_dept_text_content
+            WHERE unit_id IS NOT NULL
+              AND report_type = 'BUDGET'
+              AND category IN ('FUNCTION', 'STRUCTURE', 'TERMINOLOGY')
+              AND ($1::int IS NULL OR year = ($1::int - 1))
+            GROUP BY unit_id
+            HAVING COUNT(DISTINCT category) = 3
+          ) base_candidates
+          GROUP BY unit_id
         ) baseinfo ON baseinfo.unit_id = u.id
       )
       SELECT d.id,
@@ -58,6 +74,7 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
       FROM org_department d
       LEFT JOIN org_unit u ON u.department_id = d.id
       LEFT JOIN unit_status ON unit_status.id = u.id
+      WHERE ($2::text IS NULL OR d.name ILIKE $2 OR d.code ILIKE $2)
       GROUP BY d.id
       ORDER BY d.sort_order ASC, d.name ASC
     `,
@@ -76,6 +93,7 @@ const getDepartmentTreeWithCounts = async ({ year } = {}) => {
 
 const listUnits = async ({
   year,
+  district,
   page = 1,
   pageSize = 20,
   departmentId,
@@ -84,6 +102,11 @@ const listUnits = async ({
 }) => {
   const params = [year ?? null];
   const conditions = [];
+
+  if (district) {
+    params.push(`%${district}%`);
+    conditions.push(`(d.name ILIKE $${params.length} OR d.code ILIKE $${params.length})`);
+  }
 
   if (departmentId) {
     params.push(departmentId);
@@ -119,7 +142,7 @@ const listUnits = async ({
              COUNT(*) AS archive_count,
              BOOL_OR(is_locked) AS has_locked
       FROM history_actuals
-      WHERE ($1::int IS NULL OR year = $1)
+      WHERE ($1::int IS NULL OR year = ($1::int - 1))
       GROUP BY unit_id
     ),
     pending AS (
@@ -131,15 +154,31 @@ const listUnits = async ({
       GROUP BY unit_id
     ),
     baseinfo AS (
-      SELECT scope_id AS unit_id
-      FROM base_info_version
-      WHERE scope_type = 'unit'
-        AND is_active = true
-        AND ($1::int IS NULL OR year = $1)
-      GROUP BY scope_id
+      SELECT unit_id
+      FROM (
+        SELECT scope_id AS unit_id
+        FROM base_info_version
+        WHERE scope_type = 'unit'
+          AND is_active = true
+          AND ($1::int IS NULL OR year <= $1)
+        GROUP BY scope_id
+
+        UNION
+
+        SELECT unit_id
+        FROM org_dept_text_content
+        WHERE unit_id IS NOT NULL
+          AND report_type = 'BUDGET'
+          AND category IN ('FUNCTION', 'STRUCTURE', 'TERMINOLOGY')
+          AND ($1::int IS NULL OR year = ($1::int - 1))
+        GROUP BY unit_id
+        HAVING COUNT(DISTINCT category) = 3
+      ) base_candidates
+      GROUP BY unit_id
     )
     SELECT COUNT(*) AS total
     FROM org_unit u
+    JOIN org_department d ON d.id = u.department_id
     LEFT JOIN archive ON archive.unit_id = u.id
     LEFT JOIN pending ON pending.unit_id = u.id
     LEFT JOIN baseinfo ON baseinfo.unit_id = u.id
@@ -152,7 +191,7 @@ const listUnits = async ({
              COUNT(*) AS archive_count,
              BOOL_OR(is_locked) AS has_locked
       FROM history_actuals
-      WHERE ($1::int IS NULL OR year = $1)
+      WHERE ($1::int IS NULL OR year = ($1::int - 1))
       GROUP BY unit_id
     ),
     pending AS (
@@ -164,13 +203,27 @@ const listUnits = async ({
       GROUP BY unit_id
     ),
     baseinfo AS (
-      SELECT scope_id AS unit_id,
-             MAX(updated_at) AS updated_at
-      FROM base_info_version
-      WHERE scope_type = 'unit'
-        AND is_active = true
-        AND ($1::int IS NULL OR year = $1)
-      GROUP BY scope_id
+      SELECT unit_id
+      FROM (
+        SELECT scope_id AS unit_id
+        FROM base_info_version
+        WHERE scope_type = 'unit'
+          AND is_active = true
+          AND ($1::int IS NULL OR year <= $1)
+        GROUP BY scope_id
+
+        UNION
+
+        SELECT unit_id
+        FROM org_dept_text_content
+        WHERE unit_id IS NOT NULL
+          AND report_type = 'BUDGET'
+          AND category IN ('FUNCTION', 'STRUCTURE', 'TERMINOLOGY')
+          AND ($1::int IS NULL OR year = ($1::int - 1))
+        GROUP BY unit_id
+        HAVING COUNT(DISTINCT category) = 3
+      ) base_candidates
+      GROUP BY unit_id
     ),
     draft AS (
       SELECT DISTINCT ON (unit_id)
@@ -196,6 +249,7 @@ const listUnits = async ({
            CASE WHEN baseinfo.unit_id IS NULL THEN false ELSE true END AS baseinfo_ok,
            draft.status AS draft_status
     FROM org_unit u
+    JOIN org_department d ON d.id = u.department_id
     LEFT JOIN archive ON archive.unit_id = u.id
     LEFT JOIN pending ON pending.unit_id = u.id
     LEFT JOIN baseinfo ON baseinfo.unit_id = u.id
@@ -228,7 +282,7 @@ const getUnitDetail = async ({ unitId, year }) => {
                COUNT(*) AS archive_count,
                BOOL_OR(is_locked) AS has_locked
         FROM history_actuals
-        WHERE ($1::int IS NULL OR year = $1)
+        WHERE ($1::int IS NULL OR year = ($1::int - 1))
         GROUP BY unit_id
       ),
       pending AS (
@@ -240,13 +294,27 @@ const getUnitDetail = async ({ unitId, year }) => {
         GROUP BY unit_id
       ),
       baseinfo AS (
-        SELECT scope_id AS unit_id,
-               MAX(updated_at) AS updated_at
-        FROM base_info_version
-        WHERE scope_type = 'unit'
-          AND is_active = true
-          AND ($1::int IS NULL OR year = $1)
-        GROUP BY scope_id
+        SELECT unit_id
+        FROM (
+          SELECT scope_id AS unit_id
+          FROM base_info_version
+          WHERE scope_type = 'unit'
+            AND is_active = true
+            AND ($1::int IS NULL OR year <= $1)
+          GROUP BY scope_id
+
+          UNION
+
+          SELECT unit_id
+          FROM org_dept_text_content
+          WHERE unit_id IS NOT NULL
+            AND report_type = 'BUDGET'
+            AND category IN ('FUNCTION', 'STRUCTURE', 'TERMINOLOGY')
+            AND ($1::int IS NULL OR year = ($1::int - 1))
+          GROUP BY unit_id
+          HAVING COUNT(DISTINCT category) = 3
+        ) base_candidates
+        GROUP BY unit_id
       ),
       draft AS (
         SELECT DISTINCT ON (unit_id)
@@ -322,7 +390,7 @@ const getUnitBadges = async ({ unitId, year }) => {
                COUNT(*) AS archive_count,
                BOOL_OR(is_locked) AS has_locked
         FROM history_actuals
-        WHERE ($1::int IS NULL OR year = $1)
+        WHERE ($1::int IS NULL OR year = ($1::int - 1))
         GROUP BY unit_id
       ) archive ON archive.unit_id = u.id
       LEFT JOIN (
@@ -334,12 +402,27 @@ const getUnitBadges = async ({ unitId, year }) => {
         GROUP BY unit_id
       ) pending ON pending.unit_id = u.id
       LEFT JOIN (
-        SELECT scope_id AS unit_id
-        FROM base_info_version
-        WHERE scope_type = 'unit'
-          AND is_active = true
-          AND ($1::int IS NULL OR year = $1)
-        GROUP BY scope_id
+        SELECT unit_id
+        FROM (
+          SELECT scope_id AS unit_id
+          FROM base_info_version
+          WHERE scope_type = 'unit'
+            AND is_active = true
+            AND ($1::int IS NULL OR year <= $1)
+          GROUP BY scope_id
+
+          UNION
+
+          SELECT unit_id
+          FROM org_dept_text_content
+          WHERE unit_id IS NOT NULL
+            AND report_type = 'BUDGET'
+            AND category IN ('FUNCTION', 'STRUCTURE', 'TERMINOLOGY')
+            AND ($1::int IS NULL OR year = ($1::int - 1))
+          GROUP BY unit_id
+          HAVING COUNT(DISTINCT category) = 3
+        ) base_candidates
+        GROUP BY unit_id
       ) baseinfo ON baseinfo.unit_id = u.id
       WHERE u.id = $2
     `,

@@ -40,6 +40,10 @@ interface BudgetExplanationComposerProps {
     key: InputFieldKey;
     nonce: number;
   } | null;
+  lineItemFocusRequest?: {
+    itemKey?: string;
+    nonce: number;
+  } | null;
   unitName?: string;
 }
 
@@ -121,6 +125,8 @@ const ensureSentence = (text: string) => {
   return `${clean}。`;
 };
 
+const PLACEHOLDER_PATTERN = /(XX|XXX|……|待补充|待填写|TODO|TBD|ＸＸ)/i;
+
 const normalizeUnitName = (raw: string | null | undefined) => {
   if (!raw) return '';
   let text = String(raw).trim();
@@ -165,6 +171,7 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
   onDraftUpdated,
   onCompletionChange,
   focusRequest,
+  lineItemFocusRequest,
   unitName
 }) => {
   const [overviewText, setOverviewText] = useState('');
@@ -181,6 +188,8 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
 
   const overviewRef = useRef<HTMLTextAreaElement | null>(null);
   const reasonRef = useRef<HTMLTextAreaElement | null>(null);
+  const lineItemTextRefs = useRef(new Map<string, HTMLTextAreaElement | null>());
+  const handledLineItemFocusNonceRef = useRef<number | null>(null);
   const onLineItemStatsChangeRef = useRef(onLineItemStatsChange);
   const onDraftUpdatedRef = useRef(onDraftUpdated);
   const onCompletionChangeRef = useRef(onCompletionChange);
@@ -219,6 +228,42 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
       reasonRef.current?.focus();
     }
   }, [focusRequest]);
+
+  useEffect(() => {
+    if (!lineItemFocusRequest) {
+      return;
+    }
+    if (handledLineItemFocusNonceRef.current === lineItemFocusRequest.nonce) {
+      return;
+    }
+    if (lineItems.length === 0) {
+      return;
+    }
+
+    setFilter('all');
+    setSearchTerm('');
+
+    const timer = window.setTimeout(() => {
+      const directKey = lineItemFocusRequest.itemKey && lineItems.some((item) => item.item_key === lineItemFocusRequest.itemKey)
+        ? lineItemFocusRequest.itemKey
+        : undefined;
+      const placeholderKey = lineItems.find((item) => PLACEHOLDER_PATTERN.test(String(item.reason_text || '')))?.item_key;
+      const missingKey = lineItems.find((item) => item.reason_required && !(item.reason_text || '').trim())?.item_key;
+      const targetKey = directKey || placeholderKey || missingKey || lineItems[0]?.item_key;
+      if (!targetKey) {
+        return;
+      }
+      const input = lineItemTextRefs.current.get(targetKey);
+      if (!input) {
+        return;
+      }
+      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      input.focus();
+      handledLineItemFocusNonceRef.current = lineItemFocusRequest.nonce;
+    }, 80);
+
+    return () => window.clearTimeout(timer);
+  }, [lineItemFocusRequest, lineItems]);
 
   const loadDraftData = async (force = false) => {
     try {
@@ -517,7 +562,7 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
         <div className="flex items-center justify-between gap-3">
           <div>
             <h3 className="text-base font-semibold text-slate-900">B. 财政拨款支出主要内容（自动抽取类款项）</h3>
-            <p className="text-xs text-slate-500 mt-1">来源：预算表自动抽取。你只需补“主要用于...”。</p>
+            <p className="text-sm text-slate-600 mt-1">来源：预算表自动抽取。你只需补“主要用于...”。</p>
           </div>
           <div className="flex gap-2">
             <button
@@ -533,14 +578,6 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
               className="px-3 py-1.5 text-xs rounded border border-slate-300 text-slate-600 hover:bg-slate-50"
             >
               批量复用去年（空白项）
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleSaveLineItems()}
-              disabled={lineItemsSaving}
-              className="px-3 py-1.5 text-xs rounded bg-brand-600 text-white hover:bg-brand-700 disabled:bg-slate-300"
-            >
-              {lineItemsSaving ? '保存中...' : '保存类款项说明'}
             </button>
           </div>
         </div>
@@ -597,11 +634,11 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
                 className={`rounded-lg border p-3 ${item.reason_required && !(item.reason_text || '').trim() ? 'border-amber-300 bg-amber-50/40' : 'border-slate-200 bg-white'}`}
               >
                 <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-medium text-slate-800">{item.item_label}</p>
-                    <p className="text-xs text-slate-500 mt-1">
-                      本年: {formatWan(item.amount_current_wanyuan)} 万元 | 上年: {formatWan(item.amount_prev_wanyuan)} 万元
-                    </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-base font-semibold text-slate-800">{item.item_label}</p>
+                    <span className="inline-flex items-center rounded-full bg-brand-50 px-2.5 py-1 text-sm font-semibold text-brand-700">
+                      本年：{formatWan(item.amount_current_wanyuan)} 万元
+                    </span>
                   </div>
                   <button
                     type="button"
@@ -619,27 +656,38 @@ export const BudgetExplanationComposer: React.FC<BudgetExplanationComposerProps>
                     复用去年
                   </button>
                 </div>
-                {item.previous_reason_text ? (
-                  <div className="mt-2 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded px-2 py-1">
-                    去年用途：{item.previous_reason_text}
-                  </div>
-                ) : null}
-                <textarea
-                  value={item.reason_text || ''}
-                  onChange={(e) => {
-                    const nextText = e.target.value;
-                    updateLineItemsState((items) => items.map((row) => (
-                      row.item_key === item.item_key ? { ...row, reason_text: nextText } : row
-                    )));
-                  }}
-                  rows={2}
-                  className="mt-2 w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
-                  placeholder={item.reason_required ? '请填写该科目用途说明（如：主要用于...）' : '可选填写用途说明'}
-                />
+                <div className="mt-3 flex items-start gap-2">
+                  <p className="shrink-0 pt-2 text-base font-semibold text-slate-800">主要用于</p>
+                  <textarea
+                    ref={(element) => {
+                      lineItemTextRefs.current.set(item.item_key, element);
+                    }}
+                    value={item.reason_text || ''}
+                    onChange={(e) => {
+                      const nextText = e.target.value;
+                      updateLineItemsState((items) => items.map((row) => (
+                        row.item_key === item.item_key ? { ...row, reason_text: nextText } : row
+                      )));
+                    }}
+                    rows={2}
+                    className="min-w-0 flex-1 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
+                    placeholder={item.reason_required ? '请填写该科目用途说明（如：主要用于...）' : '可选填写用途说明'}
+                  />
+                </div>
               </div>
             ))}
           </div>
         )}
+        <div className="flex items-center justify-end pt-1">
+          <button
+            type="button"
+            onClick={() => void handleSaveLineItems()}
+            disabled={lineItemsSaving}
+            className="px-4 py-2 rounded-lg bg-brand-600 text-white text-sm font-semibold hover:bg-brand-700 disabled:bg-slate-300"
+          >
+            {lineItemsSaving ? '保存中...' : '保存类款项说明'}
+          </button>
+        </div>
       </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-5 space-y-3">

@@ -264,4 +264,183 @@ describe('security access controls', () => {
     expect(response.status).toBe(403);
     expect(response.body.code).toBe('FORBIDDEN');
   });
+
+  it('forbids managed-unit scoped reporter from parsing uploads outside selected units', async () => {
+    const tenant = await createDepartmentAndUnit({
+      deptCode: 'D_SCOPE_PARSE',
+      unitCode: 'U_SCOPE_PARSE_A',
+      deptName: 'Scope Parse Dept',
+      unitName: 'Scope Parse Unit A'
+    });
+    const secondUnit = await db.query(
+      `INSERT INTO org_unit (department_id, code, name)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [tenant.departmentId, 'U_SCOPE_PARSE_B', 'Scope Parse Unit B']
+    );
+
+    const scopedUserId = await seedUserWithRole({
+      email: 'scope-parse@example.com',
+      roleName: 'reporter',
+      unitId: null,
+      departmentId: tenant.departmentId
+    });
+    await db.query(
+      `UPDATE users
+       SET managed_unit_ids = $2::uuid[]
+       WHERE id = $1`,
+      [scopedUserId, [tenant.unitId]]
+    );
+
+    const uploadResult = await db.query(
+      `INSERT INTO upload_job (unit_id, year, caliber, file_name, file_hash, status, uploaded_by)
+       VALUES ($1, 2025, 'unit', 'scope-parse.xlsx', 'hash-scope-parse', 'PARSED', $2)
+       RETURNING id`,
+      [secondUnit.rows[0].id, scopedUserId]
+    );
+    await db.query(
+      `INSERT INTO report_draft (unit_id, year, template_version, status, created_by, upload_id)
+       VALUES ($1, 2025, 'shanghai_v1', 'PARSING', $2, $3)`,
+      [secondUnit.rows[0].id, scopedUserId, uploadResult.rows[0].id]
+    );
+
+    const token = await login('scope-parse@example.com');
+    const response = await request(app)
+      .post(`/api/uploads/${uploadResult.rows[0].id}/parse`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe('FORBIDDEN');
+  });
+
+  it('allows department-scoped reporter to read units under same department only', async () => {
+    const tenantA = await createDepartmentAndUnit({
+      deptCode: 'D_SCOPE_A',
+      unitCode: 'U_SCOPE_A1',
+      deptName: 'Scope Dept A',
+      unitName: 'Scope Unit A1'
+    });
+
+    const secondUnit = await db.query(
+      `INSERT INTO org_unit (department_id, code, name)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [tenantA.departmentId, 'U_SCOPE_A2', 'Scope Unit A2']
+    );
+
+    const tenantB = await createDepartmentAndUnit({
+      deptCode: 'D_SCOPE_B',
+      unitCode: 'U_SCOPE_B1',
+      deptName: 'Scope Dept B',
+      unitName: 'Scope Unit B1'
+    });
+
+    await seedUserWithRole({
+      email: 'scope-reporter@example.com',
+      roleName: 'reporter',
+      unitId: null,
+      departmentId: tenantA.departmentId
+    });
+
+    await db.query(
+      `INSERT INTO history_actuals (unit_id, year, stage, key, value_numeric)
+       VALUES ($1, 2025, 'FINAL', 'budget_revenue_total', 900.00)`,
+      [secondUnit.rows[0].id]
+    );
+    await db.query(
+      `INSERT INTO history_actuals (unit_id, year, stage, key, value_numeric)
+       VALUES ($1, 2025, 'FINAL', 'budget_revenue_total', 1000.00)`,
+      [tenantB.unitId]
+    );
+
+    const token = await login('scope-reporter@example.com');
+    const allowed = await request(app)
+      .get(`/api/history/lookup?unit_id=${secondUnit.rows[0].id}&year=2025&keys=budget_revenue_total`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(allowed.status).toBe(200);
+    expect(allowed.body.values).toHaveProperty('budget_revenue_total');
+
+    const denied = await request(app)
+      .get(`/api/history/lookup?unit_id=${tenantB.unitId}&year=2025&keys=budget_revenue_total`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(denied.status).toBe(403);
+    expect(denied.body.code).toBe('FORBIDDEN');
+  });
+
+  it('forbids managed-unit scoped reporter from reading drafts outside selected units', async () => {
+    const tenant = await createDepartmentAndUnit({
+      deptCode: 'D_SCOPE_DRAFT',
+      unitCode: 'U_SCOPE_DRAFT_A',
+      deptName: 'Scope Draft Dept',
+      unitName: 'Scope Draft Unit A'
+    });
+    const secondUnit = await db.query(
+      `INSERT INTO org_unit (department_id, code, name)
+       VALUES ($1, $2, $3)
+       RETURNING id`,
+      [tenant.departmentId, 'U_SCOPE_DRAFT_B', 'Scope Draft Unit B']
+    );
+
+    const scopedUserId = await seedUserWithRole({
+      email: 'scope-draft@example.com',
+      roleName: 'reporter',
+      unitId: null,
+      departmentId: tenant.departmentId
+    });
+    await db.query(
+      `UPDATE users
+       SET managed_unit_ids = $2::uuid[]
+       WHERE id = $1`,
+      [scopedUserId, [tenant.unitId]]
+    );
+
+    const uploadResult = await db.query(
+      `INSERT INTO upload_job (unit_id, year, caliber, file_name, file_hash, status, uploaded_by)
+       VALUES ($1, 2025, 'unit', 'scope-draft.xlsx', 'hash-scope-draft', 'PARSED', $2)
+       RETURNING id`,
+      [secondUnit.rows[0].id, scopedUserId]
+    );
+    const draftResult = await db.query(
+      `INSERT INTO report_draft (unit_id, year, template_version, status, created_by, upload_id)
+       VALUES ($1, 2025, 'shanghai_v1', 'DRAFT', $2, $3)
+       RETURNING id`,
+      [secondUnit.rows[0].id, scopedUserId, uploadResult.rows[0].id]
+    );
+
+    const token = await login('scope-draft@example.com');
+    const response = await request(app)
+      .get(`/api/drafts/${draftResult.rows[0].id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe('FORBIDDEN');
+  });
+
+  it('blocks department-scoped reporter from write actions (read-only scope)', async () => {
+    const tenantA = await createDepartmentAndUnit({
+      deptCode: 'D_SCOPE_WR',
+      unitCode: 'U_SCOPE_WR',
+      deptName: 'Scope Write Dept',
+      unitName: 'Scope Write Unit'
+    });
+
+    await seedUserWithRole({
+      email: 'scope-readonly@example.com',
+      roleName: 'reporter',
+      unitId: null,
+      departmentId: tenantA.departmentId
+    });
+
+    const token = await login('scope-readonly@example.com');
+    const response = await request(app)
+      .post('/api/drafts/11111111-1111-4111-8111-111111111111/validate')
+      .set('Authorization', `Bearer ${token}`)
+      .send({});
+
+    expect(response.status).toBe(403);
+    expect(response.body.code).toBe('READ_ONLY_SCOPE');
+  });
 });

@@ -25,6 +25,7 @@ export type UnitListProps = {
   onSearchChange: (value: string) => void;
   onFilterChange: (value: string | null) => void;
   onPageChange: (page: number) => void;
+  onPageSizeChange?: (pageSize: number) => void;
   onSelect: (id: string) => void;
   onDelete?: (unit: UnitRow) => void;
   onEdit?: (unit: UnitRow) => void;
@@ -37,34 +38,23 @@ const archiveBadge = (status: UnitRow['archive_status']) => {
   if (status === 'missing') {
     return (
       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-red-50 text-red-600 border border-red-100">
-        <FileQuestion className="w-3 h-3" /> 缺归档
-      </span>
+        <FileQuestion className="w-3 h-3" /> 缺归档      </span>
     );
   }
 
   if (status === 'locked') {
     return (
       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
-        <Lock className="w-3 h-3" /> 已锁定
-      </span>
+        <Lock className="w-3 h-3" /> 已锁定      </span>
     );
   }
 
   return (
     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-50 text-green-700 border border-green-100">
-      <CheckCircle2 className="w-3 h-3" /> 已入库
-    </span>
+      <CheckCircle2 className="w-3 h-3" /> 已入库    </span>
   );
 };
 
-const baseInfoBadge = (isOk: boolean) => {
-  if (isOk) return null;
-  return (
-    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-amber-50 text-amber-700 border border-amber-100">
-      <AlertTriangle className="w-3 h-3" /> 缺基础
-    </span>
-  );
-};
 
 const UnitList: React.FC<UnitListProps> = ({
   units,
@@ -77,6 +67,7 @@ const UnitList: React.FC<UnitListProps> = ({
   onSearchChange,
   onFilterChange,
   onPageChange,
+  onPageSizeChange,
   onSelect,
   onDelete,
   onEdit,
@@ -84,6 +75,7 @@ const UnitList: React.FC<UnitListProps> = ({
 }) => {
   const [viewType, setViewType] = useState<'grid' | 'list'>('grid');
   const totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  const pageSizeOptions = [20, 30, 50, 100];
 
   return (
     <div className="flex flex-col h-full bg-slate-50/30">
@@ -104,6 +96,21 @@ const UnitList: React.FC<UnitListProps> = ({
         <div className="h-6 w-px bg-slate-200 mx-1"></div>
 
         <div className="flex gap-2 items-center">
+          {onPageSizeChange && (
+            <label className="inline-flex items-center gap-1.5 text-xs text-slate-600 mr-1">
+              <span>每页</span>
+              <select
+                className="px-2 py-1 rounded-md border border-slate-300 bg-white text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-500"
+                value={pageSize}
+                onChange={(event) => onPageSizeChange(Number(event.target.value))}
+              >
+                {pageSizeOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
           <div className="flex bg-slate-100 p-0.5 rounded-lg border border-slate-200 mr-2">
             <button
               onClick={() => setViewType('grid')}
@@ -141,8 +148,7 @@ const UnitList: React.FC<UnitListProps> = ({
             `}
           >
             <FileQuestion className="w-3.5 h-3.5" />
-            缺归档
-          </button>
+            缺归档          </button>
 
           <button
             onClick={() => onFilterChange(filter === 'pendingSug' ? null : 'pendingSug')}
@@ -154,8 +160,7 @@ const UnitList: React.FC<UnitListProps> = ({
             `}
           >
             <AlertTriangle className="w-3.5 h-3.5" />
-            有待审
-          </button>
+            有待审          </button>
         </div>
       </div>
 
@@ -210,11 +215,10 @@ const UnitList: React.FC<UnitListProps> = ({
 
                   <div className="mt-4 flex flex-wrap gap-2">
                     {archiveBadge(unit.archive_status)}
-                    {baseInfoBadge(unit.baseinfo_ok)}
+                    
                     {unit.pending_count > 0 && (
                       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-medium bg-orange-50 text-orange-700 border border-orange-100">
-                        <AlertTriangle className="w-3 h-3" /> {unit.pending_count} 条待审
-                      </span>
+                        <AlertTriangle className="w-3 h-3" /> {unit.pending_count} 条待审                      </span>
                     )}
                   </div>
                 </div>
@@ -229,7 +233,7 @@ const UnitList: React.FC<UnitListProps> = ({
                 <div className="w-10 h-10 rounded-full bg-white border border-slate-200 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform shadow-sm">
                   <Plus className="w-5 h-5 text-slate-400 group-hover:text-brand-500" />
                 </div>
-                <span className="text-sm font-medium text-slate-500 group-hover:text-brand-600">添加新单位</span>
+                <span className="text-sm font-medium text-slate-500 group-hover:text-brand-600">Add Unit</span>
               </button>
             )}
           </div>
@@ -249,8 +253,7 @@ const UnitList: React.FC<UnitListProps> = ({
               {units.length === 0 ? (
                 <tr>
                   <td colSpan={4} className="px-4 py-12 text-center text-slate-400 text-sm">
-                    未找到相关单位
-                  </td>
+                    未找到相关单位                  </td>
                 </tr>
               ) : (
                 units.map((unit) => (
@@ -270,7 +273,7 @@ const UnitList: React.FC<UnitListProps> = ({
                     <td className="px-4 py-3">{archiveBadge(unit.archive_status)}</td>
                     <td className="px-4 py-3 text-sm text-slate-500">
                       <div className="flex flex-col gap-1 items-start">
-                        {baseInfoBadge(unit.baseinfo_ok)}
+                        
                         <span className="text-[10px] text-slate-400">{new Date(unit.updated_at).toLocaleDateString('zh-CN')}</span>
                       </div>
                     </td>
@@ -311,16 +314,14 @@ const UnitList: React.FC<UnitListProps> = ({
             disabled={page <= 1}
             onClick={() => onPageChange(Math.max(page - 1, 1))}
           >
-            上一页
-          </button>
-          <span className="font-medium">{page} / {totalPages} 页</span>
+            上一页          </button>
+          <span className="font-medium">第{page} / {totalPages} 页，共 {total} 条</span>
           <button
             className="px-2 py-1 bg-white border border-slate-300 rounded hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed shadow-sm"
             disabled={page >= totalPages}
             onClick={() => onPageChange(Math.min(page + 1, totalPages))}
           >
-            下一页
-          </button>
+            下一页          </button>
         </div>
       )}
     </div>

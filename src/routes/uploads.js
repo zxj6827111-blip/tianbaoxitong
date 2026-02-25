@@ -5,7 +5,13 @@ const path = require('node:path');
 const multer = require('multer');
 const db = require('../db');
 const { AppError } = require('../errors');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const {
+  requireAuth,
+  requireRole,
+  requireScope,
+  isAdminLike,
+  scopeAllowsUnit
+} = require('../middleware/auth');
 const { parseBudgetWorkbook } = require('../services/excelParser');
 const { BUDGET_MAPPING, BUDGET_MAPPING_DEPARTMENT } = require('../services/budgetMapping');
 const { ensureUploadDir, getUploadFilePath } = require('../services/uploadStorage');
@@ -24,12 +30,133 @@ const upload = multer({
   }
 });
 
-const isAdminLike = (user) => {
-  const roles = user?.roles || [];
-  return roles.includes('admin') || roles.includes('maintainer');
+const CALIBERS = Object.freeze({
+  UNIT: 'unit',
+  DEPARTMENT: 'department'
+});
+
+const normalizeCaliber = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === CALIBERS.DEPARTMENT) return CALIBERS.DEPARTMENT;
+  if (normalized === CALIBERS.UNIT) return CALIBERS.UNIT;
+  return null;
 };
 
-router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), upload.single('file'), async (req, res, next) => {
+const getBudgetMappingByCaliber = (caliber) => (
+  caliber === CALIBERS.DEPARTMENT ? BUDGET_MAPPING_DEPARTMENT : BUDGET_MAPPING
+);
+
+const buildParseCaliberOrder = (preferredCaliber) => {
+  const normalizedPreferred = normalizeCaliber(preferredCaliber);
+  const order = [];
+  if (normalizedPreferred) {
+    order.push(normalizedPreferred);
+  }
+  if (!order.includes(CALIBERS.UNIT)) {
+    order.push(CALIBERS.UNIT);
+  }
+  if (!order.includes(CALIBERS.DEPARTMENT)) {
+    order.push(CALIBERS.DEPARTMENT);
+  }
+  return order;
+};
+
+const parseWorkbookWithAutoCaliber = async ({ filePath, preferredCaliber }) => {
+  const parseOrder = buildParseCaliberOrder(preferredCaliber);
+  const parseErrors = [];
+
+  for (const caliber of parseOrder) {
+    try {
+      const parseResult = await parseBudgetWorkbook(filePath, getBudgetMappingByCaliber(caliber));
+      return { parseResult, caliber };
+    } catch (error) {
+      parseErrors.push({ caliber, error });
+    }
+  }
+
+  const preferredError = parseErrors.find((item) => item.caliber === normalizeCaliber(preferredCaliber))?.error;
+  throw preferredError || parseErrors[0]?.error || new Error('Failed to parse workbook');
+};
+
+router.get('/scope-options', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), requireScope({ enforceWriteGuard: false }), async (req, res, next) => {
+  try {
+    const adminLike = Boolean(req.scopeMeta?.isAdminLike);
+    let whereClause = '';
+    let params = [];
+
+    if (!adminLike) {
+      if (Array.isArray(req.scopeFilter?.unit_ids) && req.scopeFilter.unit_ids.length > 0) {
+        params = [req.scopeFilter.unit_ids];
+        whereClause = 'WHERE u.id = ANY($1::uuid[])';
+      } else if (req.scopeFilter?.unit_id) {
+        params = [req.scopeFilter.unit_id];
+        whereClause = 'WHERE u.id = $1';
+      } else if (req.scopeFilter?.department_id) {
+        params = [req.scopeFilter.department_id];
+        whereClause = 'WHERE u.department_id = $1';
+      } else {
+        return res.json({
+          departments: [],
+          units: [],
+          default_department_id: null,
+          default_unit_id: null
+        });
+      }
+    }
+
+    const rowsResult = await db.query(
+      `SELECT u.id,
+              u.name,
+              u.department_id,
+              dep.name AS department_name
+       FROM org_unit u
+       LEFT JOIN org_department dep ON dep.id = u.department_id
+       ${whereClause}
+       ORDER BY dep.sort_order ASC NULLS LAST,
+                dep.name ASC NULLS LAST,
+                u.sort_order ASC NULLS LAST,
+                u.name ASC,
+                u.id ASC`,
+      params
+    );
+
+    const units = rowsResult.rows.map((row) => ({
+      id: String(row.id),
+      name: row.name || '',
+      department_id: row.department_id ? String(row.department_id) : null,
+      department_name: row.department_name || null
+    }));
+
+    const departmentMap = new Map();
+    units.forEach((unit) => {
+      const departmentId = String(unit.department_id || '').trim();
+      if (!departmentId || departmentMap.has(departmentId)) return;
+      departmentMap.set(departmentId, String(unit.department_name || '').trim() || `部门 ${departmentId.slice(0, 8)}`);
+    });
+
+    const departments = Array.from(departmentMap.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'));
+
+    const defaultDepartmentId = req.scopeFilter?.department_id
+      ? String(req.scopeFilter.department_id)
+      : (departments.length === 1 ? departments[0].id : null);
+    const defaultUnitId = req.scopeFilter?.unit_id
+      ? String(req.scopeFilter.unit_id)
+      : (units.length === 1 ? units[0].id : null);
+
+    return res.json({
+      departments,
+      units,
+      default_department_id: defaultDepartmentId,
+      default_unit_id: defaultUnitId
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), requireScope(), upload.single('file'), async (req, res, next) => {
   try {
     if (!req.file) {
       return next(new AppError({
@@ -48,25 +175,124 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
       }));
     }
 
-    // Admin/maintainer can specify unit_id in request body, regular users use their assigned unit
+    // Admin/maintainer can operate on any unit; scoped users can only target assigned unit_ids.
     const adminLike = isAdminLike(req.user);
-    const unitId = adminLike && req.body.unit_id ? req.body.unit_id : req.user.unit_id;
-    const year = Number(req.body.year);
-    const caliber = req.body.caliber || 'unit';
+    const selectedDepartmentId = req.body.department_id
+      ? String(req.body.department_id).trim()
+      : '';
+    const requestedUnitId = req.body.unit_id
+      ? String(req.body.unit_id).trim()
+      : '';
+    const scopedUnitIds = Array.isArray(req.scopeFilter?.unit_ids)
+      ? req.scopeFilter.unit_ids.map((value) => String(value))
+      : [];
+    let resolvedUnitId = '';
 
-    if (!unitId) {
-      return next(new AppError({
-        statusCode: 400,
-        code: 'VALIDATION_ERROR',
-        message: adminLike ? 'unit_id is required (please select a unit)' : 'User has no assigned unit'
-      }));
+    if (adminLike) {
+      resolvedUnitId = requestedUnitId;
+    } else if (requestedUnitId) {
+      if (!scopeAllowsUnit(req.scopeFilter, requestedUnitId)) {
+        return next(new AppError({
+          statusCode: 403,
+          code: 'FORBIDDEN',
+          message: 'No permission to operate this unit'
+        }));
+      }
+      resolvedUnitId = requestedUnitId;
+    } else if (req.user.unit_id) {
+      resolvedUnitId = String(req.user.unit_id);
+    } else if (scopedUnitIds.length === 1) {
+      resolvedUnitId = scopedUnitIds[0];
     }
+    const year = Number(req.body.year);
+    const requestedCaliber = normalizeCaliber(req.body.caliber);
+    let initialCaliber = requestedCaliber || CALIBERS.UNIT;
 
     if (!Number.isInteger(year)) {
       return next(new AppError({
         statusCode: 400,
         code: 'VALIDATION_ERROR',
         message: 'year is required'
+      }));
+    }
+
+    if (selectedDepartmentId) {
+      if (resolvedUnitId) {
+        const unitDepartmentResult = await db.query(
+          `SELECT department_id
+           FROM org_unit
+           WHERE id = $1`,
+          [resolvedUnitId]
+        );
+        const mappedDepartmentId = unitDepartmentResult.rows[0]?.department_id
+          ? String(unitDepartmentResult.rows[0].department_id).trim()
+          : '';
+
+        if (!mappedDepartmentId) {
+          return next(new AppError({
+            statusCode: 400,
+            code: 'VALIDATION_ERROR',
+            message: 'unit_id is invalid'
+          }));
+        }
+
+        if (mappedDepartmentId !== selectedDepartmentId) {
+          return next(new AppError({
+            statusCode: 400,
+            code: 'VALIDATION_ERROR',
+            message: 'unit_id does not belong to department_id'
+          }));
+        }
+      } else {
+        const fallbackUnitQuery = adminLike
+          ? `SELECT id
+             FROM org_unit
+             WHERE department_id = $1
+             ORDER BY
+               CASE WHEN name ~ '(本级|机关|本部)' THEN 0 ELSE 1 END,
+               sort_order ASC,
+               name ASC,
+               id ASC
+             LIMIT 1`
+          : `SELECT id
+             FROM org_unit
+             WHERE department_id = $1
+               AND id = ANY($2::uuid[])
+             ORDER BY
+               CASE WHEN name ~ '(本级|机关|本部)' THEN 0 ELSE 1 END,
+               sort_order ASC,
+               name ASC,
+               id ASC
+             LIMIT 1`;
+        const fallbackUnitResult = await db.query(
+          fallbackUnitQuery,
+          adminLike ? [selectedDepartmentId] : [selectedDepartmentId, scopedUnitIds]
+        );
+
+        if (fallbackUnitResult.rowCount === 0) {
+          return next(new AppError({
+            statusCode: 400,
+            code: 'VALIDATION_ERROR',
+            message: adminLike
+              ? 'selected department has no units'
+              : 'selected department has no accessible units'
+          }));
+        }
+
+        resolvedUnitId = String(fallbackUnitResult.rows[0].id);
+        initialCaliber = CALIBERS.DEPARTMENT;
+      }
+    }
+
+    if (!resolvedUnitId) {
+      return next(new AppError({
+        statusCode: 400,
+        code: 'VALIDATION_ERROR',
+        message: adminLike
+          ? 'department_id is required; unit_id is optional'
+          : (scopedUnitIds.length > 1
+            ? 'unit_id is required for current account'
+            : 'User has no assigned unit')
       }));
     }
 
@@ -84,7 +310,7 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
       // Find existing upload
       const existing = await client.query(
         'SELECT id, file_name FROM upload_job WHERE unit_id = $1 AND year = $2',
-        [unitId, year]
+        [resolvedUnitId, year]
       );
 
       if (existing.rowCount > 0) {
@@ -105,7 +331,7 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
         `INSERT INTO upload_job (unit_id, year, caliber, file_name, file_hash, status, uploaded_by)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, file_hash, status`,
-        [unitId, year, caliber, req.file.originalname, fileHash, 'UPLOADED', req.user.id]
+        [resolvedUnitId, year, initialCaliber, req.file.originalname, fileHash, 'UPLOADED', req.user.id]
       );
 
       const uploadId = insertResult.rows[0].id;
@@ -151,7 +377,7 @@ router.post('/', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), 
   }
 });
 
-router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), async (req, res, next) => {
+router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'reporter']), requireScope(), async (req, res, next) => {
   const uploadId = req.params.id;
   const client = await db.getClient();
 
@@ -174,9 +400,22 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     }
 
     const uploadJob = uploadResult.rows[0];
-    const hasUploadAccess = isAdminLike(req.user)
-      || (req.user?.unit_id && String(req.user.unit_id) === String(uploadJob.unit_id))
-      || (uploadJob.uploaded_by && String(uploadJob.uploaded_by) === String(req.user.id));
+    let hasUploadAccess = Boolean(req.scopeMeta?.isAdminLike);
+    if (!hasUploadAccess) {
+      hasUploadAccess = scopeAllowsUnit(req.scopeFilter, uploadJob.unit_id);
+    }
+    const hasExplicitUnitScope = Boolean(req.scopeFilter?.unit_id)
+      || (Array.isArray(req.scopeFilter?.unit_ids) && req.scopeFilter.unit_ids.length > 0);
+    if (!hasUploadAccess && req.scopeFilter?.department_id && !hasExplicitUnitScope) {
+      const scopeCheck = await client.query(
+        `SELECT 1
+         FROM org_unit
+         WHERE id = $1
+           AND department_id = $2`,
+        [uploadJob.unit_id, req.scopeFilter.department_id]
+      );
+      hasUploadAccess = scopeCheck.rowCount > 0;
+    }
 
     if (!hasUploadAccess) {
       throw new AppError({
@@ -204,10 +443,10 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
     }
 
     const filePath = getUploadFilePath(uploadId, uploadJob.file_name);
-    const mapping = uploadJob.caliber === 'department'
-      ? BUDGET_MAPPING_DEPARTMENT
-      : BUDGET_MAPPING;
-    const parseResult = await parseBudgetWorkbook(filePath, mapping);
+    const { parseResult, caliber: resolvedCaliber } = await parseWorkbookWithAutoCaliber({
+      filePath,
+      preferredCaliber: uploadJob.caliber
+    });
 
     await client.query('DELETE FROM parsed_cells WHERE upload_id = $1', [uploadId]);
     await client.query('DELETE FROM facts_budget WHERE upload_id = $1', [uploadId]);
@@ -319,8 +558,12 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
         const historyResult = await client.query(
           `SELECT content_text
            FROM org_dept_text_content
-           WHERE department_id = $1 AND year = $2 AND report_type = 'BUDGET' AND category = $3`,
-          [departmentId, prevYear, category]
+           WHERE department_id = $1
+             AND year = $2
+             AND report_type = 'BUDGET'
+             AND category = $3
+             AND unit_id = $4`,
+          [departmentId, prevYear, category, uploadJob.unit_id]
         );
         const historyText = historyResult.rows[0]?.content_text;
         const normalizedHistoryText = sanitizeManualTextByKey(key, historyText);
@@ -350,9 +593,11 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
 
     await client.query(
       `UPDATE upload_job
-       SET status = $1, updated_at = now()
-       WHERE id = $2`,
-      ['PARSED', uploadId]
+       SET status = $1,
+           caliber = $2,
+           updated_at = now()
+       WHERE id = $3`,
+      ['PARSED', resolvedCaliber, uploadId]
     );
 
     await client.query('COMMIT');
@@ -362,6 +607,7 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
       upload_id: uploadId,
       extracted_keys_count: parseResult.facts.length,
       extracted_texts_count: parseResult.texts ? parseResult.texts.length : 0,
+      caliber: resolvedCaliber,
       status: draftResult.rows[0].status
     });
   } catch (error) {
@@ -376,3 +622,4 @@ router.post('/:id/parse', requireAuth, requireRole(['admin', 'maintainer', 'repo
 });
 
 module.exports = router;
+

@@ -70,8 +70,14 @@ router.post('/login', async (req, res, next) => {
         username: userWithRoles.email,
         email: userWithRoles.email,
         role: userWithRoles.roles[0] || 'reporter',
+        roles: userWithRoles.roles || [],
         unit_id: userWithRoles.unit_id,
-        department_id: userWithRoles.department_id
+        department_id: userWithRoles.department_id,
+        managed_unit_ids: Array.isArray(userWithRoles.managed_unit_ids)
+          ? userWithRoles.managed_unit_ids
+          : [],
+        can_create_budget: userWithRoles.can_create_budget !== false,
+        can_create_final: userWithRoles.can_create_final !== false
       }
     });
   } catch (error) {

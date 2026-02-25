@@ -81,10 +81,14 @@ const extractPreviousBudgetValues = async ({ unitId, year }) => {
   if (!departmentId) return {};
 
   const tableResult = await db.query(
-    `SELECT table_key, data_json
-     FROM org_dept_table_data
-     WHERE department_id = $1 AND year = $2 AND report_type = 'BUDGET'`,
-    [departmentId, prevYear]
+    `SELECT td.table_key, td.data_json
+     FROM org_dept_table_data td
+     JOIN org_dept_annual_report ar ON ar.id = td.report_id
+     WHERE ar.department_id = $1
+       AND ar.unit_id = $2
+       AND ar.year = $3
+       AND ar.report_type = 'BUDGET'`,
+    [departmentId, unitId, prevYear]
   );
 
   const tableMap = new Map();
@@ -152,8 +156,12 @@ const fetchPreviousChangeReason = async ({ unitId, year }) => {
   const result = await db.query(
     `SELECT content_text
      FROM org_dept_text_content
-     WHERE department_id = $1 AND year = $2 AND report_type = 'BUDGET' AND category = 'EXPLANATION_CHANGE_REASON'`,
-    [departmentId, prevYear]
+     WHERE department_id = $1
+       AND year = $2
+       AND report_type = 'BUDGET'
+       AND category = 'EXPLANATION_CHANGE_REASON'
+       AND unit_id = $3`,
+    [departmentId, prevYear, unitId]
   );
 
   return result.rows[0]?.content_text || '';

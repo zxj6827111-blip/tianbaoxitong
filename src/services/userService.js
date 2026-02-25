@@ -10,7 +10,16 @@ const getUserByEmail = async (email) => {
 
 const getUserWithRoles = async (userId) => {
   const userResult = await db.query(
-    'SELECT id, email, display_name, unit_id, department_id FROM users WHERE id = $1',
+    `SELECT id,
+            email,
+            display_name,
+            unit_id,
+            department_id,
+            managed_unit_ids,
+            can_create_budget,
+            can_create_final
+     FROM users
+     WHERE id = $1`,
     [userId]
   );
 
@@ -28,6 +37,11 @@ const getUserWithRoles = async (userId) => {
 
   return {
     ...userResult.rows[0],
+    managed_unit_ids: Array.isArray(userResult.rows[0].managed_unit_ids)
+      ? userResult.rows[0].managed_unit_ids.map((value) => String(value))
+      : [],
+    can_create_budget: userResult.rows[0].can_create_budget !== false,
+    can_create_final: userResult.rows[0].can_create_final !== false,
     roles: rolesResult.rows.map((row) => row.name)
   };
 };
